@@ -1,0 +1,554 @@
+import argparse
+import base64
+import difflib
+import ipaddress
+import json
+import os
+import re
+import socket
+import ssl
+import sys
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
+
+try:
+    import requests
+except ImportError:
+    sys.exit("Modul 'requests' belum terpasang. Jalankan: pip install requests")
+
+UA = "Mozilla/5.0 (compatible; osint-toolkit/1.0; security-research)"
+TIMEOUT = 8
+
+TWO_LEVEL_SUFFIXES = {
+    "co.id", "go.id", "ac.id", "or.id", "web.id", "sch.id", "my.id", "net.id",
+    "co.uk", "org.uk", "com.au", "co.jp", "com.sg", "com.my", "co.in",
+}
+
+SUSPICIOUS_TLDS = {
+    "zip", "mov", "top", "xyz", "icu", "click", "link", "tk", "ml", "ga", "cf",
+    "gq", "cyou", "sbs", "cfd", "rest", "support", "country", "work", "buzz",
+}
+
+SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "cutt.ly", "rb.gy",
+    "s.id", "ow.ly", "shorturl.at", "bit.do", "t.ly", "rebrand.ly",
+}
+
+KEYWORDS = [
+    "login", "signin", "verify", "verifikasi", "update", "secure", "account",
+    "akun", "password", "otp", "konfirmasi", "hadiah", "undian", "klaim",
+    "blokir", "suspend", "bantuan", "refund", "wallet", "pin",
+]
+
+# Brand -> domain resmi (registered domain). Tambahkan sesuai kebutuhan.
+BRANDS = {
+    "bca": {"bca.co.id", "klikbca.com"},
+    "mandiri": {"bankmandiri.co.id", "livin.bankmandiri.co.id"},
+    "bri": {"bri.co.id"},
+    "bni": {"bni.co.id"},
+    "tokopedia": {"tokopedia.com"},
+    "shopee": {"shopee.co.id", "shopee.com"},
+    "gojek": {"gojek.com"},
+    "dana": {"dana.id"},
+    "ovo": {"ovo.id"},
+    "linkaja": {"linkaja.id"},
+    "telkomsel": {"telkomsel.com"},
+    "bpjs": {"bpjs-kesehatan.go.id", "bpjsketenagakerjaan.go.id"},
+    "google": {"google.com", "google.co.id"},
+    "microsoft": {"microsoft.com", "live.com", "office.com"},
+    "paypal": {"paypal.com"},
+    "apple": {"apple.com", "icloud.com"},
+    "facebook": {"facebook.com"},
+    "instagram": {"instagram.com"},
+    "whatsapp": {"whatsapp.com"},
+    "amazon": {"amazon.com"},
+    "netflix": {"netflix.com"},
+}
+
+CLOUD_HINTS = [
+    "amazon", "aws", "google", "microsoft", "azure", "digitalocean", "ovh",
+    "hetzner", "linode", "vultr", "cloudflare", "alibaba", "oracle", "contabo",
+]
+
+
+# ------------------------------------------------------------------ banner
+
+BANNER_ART = [
+    r"    .-----.         .-----.",
+    r"    |     |         |     |",
+    r"  .'       '._____.'       '.",
+    r"  |  .---.  |#####|  .---.  |",
+    r"  | /  +  \ |#####| /  +  \ |",
+    r"  | \_____/ |#####| \_____/ |",
+    r"  '-._____.-'     '-._____.-'",
+]
+
+BANNER_WORD = [
+    r" ___            ___          _     ",
+    r"| _ ) _ _ ___  / __|___  __| |___ ",
+    r"| _ \| '_/ _ \| (__/ _ \/ _` / -_)",
+    r"|___/|_| \___/ \___\___/\__,_\___|",
+]
+
+
+def print_banner(stream=None):
+    """Cetak banner BroCode (teropong merah). Warna hanya jika output adalah terminal."""
+    stream = stream or sys.stdout
+    if os.name == "nt":
+        os.system("")  # aktifkan ANSI escape di terminal Windows
+    color = stream.isatty() and not os.environ.get("NO_COLOR")
+    red, bold, dim, white, reset = (("\033[91m", "\033[1m", "\033[2m", "\033[97m", "\033[0m")
+                                    if color else ("", "", "", "", ""))
+    right = (
+        [""]
+        + [f"{red}{bold}{w}{reset}" for w in BANNER_WORD]
+        + [f"{dim}OSINT Toolkit - URL phishing & analisis IP{reset}",
+           f"Dibuat oleh {bold}{white}Nathan{reset}"]
+    )
+    print(file=stream)
+    for art, text in zip(BANNER_ART, right):
+        print(f"{red}{art.ljust(32)}{reset}{text}", file=stream)
+    print(file=stream)
+
+
+# ----------------------------------------------------------------- utilitas
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def resolve(host):
+    try:
+        return {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except (socket.gaierror, UnicodeError):
+        return set()
+
+
+def is_public_host(host):
+    """True jika host resolve ke IP publik saja (cegah akses ke jaringan internal)."""
+    ips = resolve(host)
+    if not ips:
+        return False
+    try:
+        return all(ipaddress.ip_address(i.split("%")[0]).is_global for i in ips)
+    except ValueError:
+        return False
+
+
+def registered_domain(host):
+    parts = host.lower().strip(".").split(".")
+    n = 3 if len(parts) >= 3 and ".".join(parts[-2:]) in TWO_LEVEL_SUFFIXES else 2
+    if len(parts) < n:
+        return host.lower(), parts[0], 0
+    return ".".join(parts[-n:]), parts[-n], len(parts) - n
+
+
+def normalize_label(s):
+    """Normalisasi homoglyph sederhana: 0->o, 1->l, 3->e, 5->s, rn->m."""
+    s = s.lower().replace("rn", "m")
+    return s.translate(str.maketrans("0135", "oles"))
+
+
+def http_get_json(url, headers=None, params=None):
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+        if r.status_code == 200:
+            return r.json()
+    except (requests.RequestException, ValueError):
+        pass
+    return None
+
+
+# ------------------------------------------------------------ analisis URL
+
+def brand_lookalike(host):
+    reg, label, _ = registered_domain(host)
+    norm = normalize_label(label)
+    host_l = host.lower()
+    for brand, official in BRANDS.items():
+        if reg in official:
+            return None
+        # brand muncul di domain tetapi bukan domain resmi (mis. bca-login.xyz)
+        if brand in norm.split("-") or (len(brand) >= 5 and brand in norm):
+            return f"memuat nama brand '{brand}' tetapi bukan domain resmi"
+        if brand in host_l.split(".")[:-2] or any(brand == p for p in host_l.split(".")[:-1]):
+            return f"subdomain menyerupai brand '{brand}' pada domain tidak resmi ({reg})"
+        ratio = difflib.SequenceMatcher(None, norm, brand).ratio()
+        if len(brand) >= 4 and 0.8 <= ratio < 1.0:
+            return f"mirip brand '{brand}' (typosquatting, kemiripan {ratio:.0%})"
+        if norm == brand:
+            return f"meniru brand '{brand}' dengan karakter pengganti"
+    return None
+
+
+def redirect_chain(url, max_hops=10):
+    chain = []
+    s = requests.Session()
+    s.headers["User-Agent"] = UA
+    cur = url
+    for _ in range(max_hops):
+        host = urlparse(cur).hostname
+        if not host:
+            chain.append({"url": cur, "status": "URL tidak valid"})
+            break
+        if not is_public_host(host):
+            chain.append({"url": cur, "status": "dilewati (DNS gagal / IP non-publik)"})
+            break
+        try:
+            r = s.get(cur, allow_redirects=False, timeout=TIMEOUT, stream=True)
+        except requests.exceptions.SSLError:
+            chain.append({"url": cur, "status": "error SSL"})
+            break
+        except requests.RequestException as e:
+            chain.append({"url": cur, "status": f"error: {type(e).__name__}"})
+            break
+        chain.append({"url": cur, "status": r.status_code})
+        loc = r.headers.get("Location")
+        redirected = r.is_redirect and loc
+        r.close()
+        if not redirected:
+            break
+        cur = urljoin(cur, loc)
+    return chain
+
+
+def domain_age_days(domain):
+    data = http_get_json(f"https://rdap.org/domain/{domain}",
+                         headers={"Accept": "application/rdap+json"})
+    if not data:
+        return None
+    for ev in data.get("events", []):
+        if ev.get("eventAction") == "registration":
+            try:
+                dt = datetime.fromisoformat(ev["eventDate"].replace("Z", "+00:00"))
+                return (now_utc() - dt).days
+            except (ValueError, KeyError):
+                return None
+    return None
+
+
+def tls_info(host, port=443):
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                cert = ss.getpeercert()
+    except ssl.SSLCertVerificationError as e:
+        return {"valid": False, "error": e.verify_message}
+    except (OSError, ssl.SSLError) as e:
+        return {"valid": None, "error": str(e)}
+    nb = datetime.fromtimestamp(ssl.cert_time_to_seconds(cert["notBefore"]), timezone.utc)
+    na = datetime.fromtimestamp(ssl.cert_time_to_seconds(cert["notAfter"]), timezone.utc)
+    issuer = dict(x[0] for x in cert.get("issuer", ())).get("organizationName", "?")
+    return {
+        "valid": True,
+        "issuer": issuer,
+        "not_before": nb.date().isoformat(),
+        "not_after": na.date().isoformat(),
+        "age_days": (now_utc() - nb).days,
+    }
+
+
+def vt_lookup(kind, ident):
+    key = os.environ.get("VT_API_KEY")
+    if not key:
+        return None
+    data = http_get_json(f"https://www.virustotal.com/api/v3/{kind}/{ident}",
+                         headers={"x-apikey": key})
+    if not data:
+        return {"note": "tidak ada data / belum pernah dipindai di VirusTotal"}
+    return data.get("data", {}).get("attributes", {})
+
+
+def analyze_url(raw, fetch=True):
+    result = {"input": raw, "score": 0, "findings": [], "info": {}}
+
+    def add(points, text):
+        result["score"] += points
+        result["findings"].append({"points": points, "text": text})
+
+    url = raw if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw) else "http://" + raw
+    p = urlparse(url)
+    host = (p.hostname or "").lower()
+    if not host:
+        result["error"] = "URL tidak valid"
+        return result
+
+    result["info"]["host"] = host
+    reg, label, sub_count = registered_domain(host)
+    result["info"]["registered_domain"] = reg
+
+    # --- heuristik statis ---
+    if p.scheme == "http":
+        add(10, "Tidak memakai HTTPS")
+    if "@" in p.netloc:
+        add(25, "URL memuat '@' (teknik menyamarkan tujuan sebenarnya)")
+    try:
+        ipaddress.ip_address(host)
+        add(25, "Host berupa alamat IP, bukan nama domain")
+    except ValueError:
+        pass
+    if "xn--" in host:
+        add(20, "Domain memakai punycode/IDN (risiko homograph attack)")
+    if len(url) > 100:
+        add(5, f"URL sangat panjang ({len(url)} karakter)")
+    if sub_count >= 3:
+        add(10, f"Banyak subdomain ({sub_count} level)")
+    if host.count("-") >= 3:
+        add(8, "Banyak tanda hubung pada domain")
+    tld = host.rsplit(".", 1)[-1]
+    if tld in SUSPICIOUS_TLDS:
+        add(12, f"TLD '.{tld}' sering disalahgunakan")
+    if reg in SHORTENERS:
+        add(8, "Layanan pemendek URL (tujuan asli disembunyikan)")
+    hits = [k for k in KEYWORDS if k in (host + p.path + p.query).lower()]
+    if hits:
+        add(min(16, 4 * len(hits)), "Kata kunci umum phishing: " + ", ".join(hits[:6]))
+    bl = brand_lookalike(host)
+    if bl:
+        add(30, "Peniruan brand: " + bl)
+
+    # --- pemeriksaan jaringan (pasif/ringan) ---
+    if fetch:
+        chain = redirect_chain(url)
+        result["info"]["redirect_chain"] = chain
+        if len(chain) > 3:
+            add(8, f"Rantai redirect panjang ({len(chain)} hop)")
+        final_host = urlparse(chain[-1]["url"]).hostname if chain else None
+        if final_host and registered_domain(final_host)[0] != reg:
+            result["info"]["final_domain"] = registered_domain(final_host)[0]
+            if reg not in SHORTENERS:
+                add(6, f"Redirect berpindah ke domain lain: {registered_domain(final_host)[0]}")
+            fb = brand_lookalike(final_host)
+            if fb:
+                add(30, "Tujuan akhir meniru brand: " + fb)
+
+    age = domain_age_days(reg)
+    if age is None:
+        result["info"]["domain_age_days"] = "tidak tersedia (RDAP untuk TLD ini mungkin tidak didukung)"
+    else:
+        result["info"]["domain_age_days"] = age
+        if age < 30:
+            add(30, f"Domain baru dibuat ({age} hari lalu)")
+        elif age < 180:
+            add(15, f"Domain relatif baru ({age} hari)")
+
+    if fetch and is_public_host(host):
+        tls = tls_info(host)
+        result["info"]["tls"] = tls
+        if tls.get("valid") is False:
+            add(20, f"Sertifikat TLS tidak valid: {tls.get('error')}")
+        elif tls.get("valid") and tls["age_days"] < 14:
+            add(5, f"Sertifikat TLS baru diterbitkan ({tls['age_days']} hari lalu)")
+
+    # --- VirusTotal (opsional) ---
+    uid = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
+    vt = vt_lookup("urls", uid)
+    if vt is not None:
+        stats = vt.get("last_analysis_stats")
+        result["info"]["virustotal"] = stats or vt
+        if stats:
+            mal = stats.get("malicious", 0)
+            if mal >= 3:
+                add(40, f"VirusTotal: {mal} engine menandai berbahaya")
+            elif mal >= 1:
+                add(20, f"VirusTotal: {mal} engine menandai berbahaya")
+
+    s = result["score"]
+    result["verdict"] = ("KEMUNGKINAN BESAR PHISHING" if s >= 60 else
+                         "MENCURIGAKAN" if s >= 30 else
+                         "RISIKO RENDAH (bukan jaminan aman)")
+    return result
+
+
+# ------------------------------------------------------------- analisis IP
+
+def cymru_asn(ip):
+    """Team Cymru IP-to-ASN lewat whois (port 43). Pasif, hanya query data publik."""
+    try:
+        with socket.create_connection(("whois.cymru.com", 43), timeout=TIMEOUT) as s:
+            s.sendall(f"begin\nverbose\n{ip}\nend\n".encode())
+            buf = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except OSError:
+        return None
+    for line in buf.decode(errors="replace").splitlines():
+        if "|" in line and not line.strip().upper().startswith("AS "):
+            f = [x.strip() for x in line.split("|")]
+            if len(f) >= 7:
+                return {"asn": f[0], "prefix": f[2], "country": f[3],
+                        "registry": f[4], "allocated": f[5], "as_name": f[6]}
+    return None
+
+
+def vcard_field(entity, field):
+    for item in (entity.get("vcardArray") or [None, []])[1]:
+        if item and item[0] == field:
+            return item[3]
+    return None
+
+
+def rdap_ip(ip):
+    data = http_get_json(f"https://rdap.org/ip/{ip}",
+                         headers={"Accept": "application/rdap+json"})
+    if not data:
+        return None
+    out = {"name": data.get("name"), "handle": data.get("handle"),
+           "country": data.get("country"), "type": data.get("type"),
+           "range": f"{data.get('startAddress')} - {data.get('endAddress')}"}
+    for ent in data.get("entities", []):
+        roles = ent.get("roles", [])
+        if "abuse" in roles:
+            out["abuse_contact"] = vcard_field(ent, "email")
+        if "registrant" in roles:
+            out["registrant"] = vcard_field(ent, "fn")
+    return out
+
+
+def analyze_ip(raw):
+    result = {"input": raw, "findings": [], "info": {}}
+    try:
+        ip = ipaddress.ip_address(raw.strip())
+    except ValueError:
+        result["error"] = "Alamat IP tidak valid"
+        return result
+
+    result["info"]["version"] = ip.version
+    if not ip.is_global:
+        result["info"]["scope"] = ("privat/reserved/loopback/link-local - "
+                                   "bukan IP publik, pencarian eksternal dilewati")
+        return result
+
+    try:
+        result["info"]["reverse_dns"] = socket.gethostbyaddr(str(ip))[0]
+    except (socket.herror, socket.gaierror, OSError):
+        result["info"]["reverse_dns"] = None
+
+    asn = cymru_asn(str(ip))
+    if asn:
+        result["info"]["asn"] = asn
+    rdap = rdap_ip(str(ip))
+    if rdap:
+        result["info"]["rdap"] = rdap
+
+    blob = " ".join(str(x) for x in [result["info"].get("reverse_dns"),
+                                      (asn or {}).get("as_name"),
+                                      (rdap or {}).get("name")]).lower()
+    cloud = [c for c in CLOUD_HINTS if c in blob]
+    if cloud:
+        result["findings"].append("Terindikasi hosting/cloud: " + ", ".join(cloud)
+                                  + " (IP bersama; belum tentu berbahaya)")
+
+    key = os.environ.get("ABUSEIPDB_API_KEY")
+    if key:
+        d = http_get_json("https://api.abuseipdb.com/api/v2/check",
+                          headers={"Key": key, "Accept": "application/json"},
+                          params={"ipAddress": str(ip), "maxAgeInDays": 90})
+        if d:
+            d = d.get("data", {})
+            result["info"]["abuseipdb"] = {
+                "confidence_score": d.get("abuseConfidenceScore"),
+                "total_reports": d.get("totalReports"),
+                "usage_type": d.get("usageType"),
+                "isp": d.get("isp"),
+            }
+            if (d.get("abuseConfidenceScore") or 0) >= 50:
+                result["findings"].append(
+                    f"AbuseIPDB: skor kepercayaan penyalahgunaan {d['abuseConfidenceScore']}%")
+
+    vt = vt_lookup("ip_addresses", str(ip))
+    if vt is not None:
+        stats = vt.get("last_analysis_stats")
+        result["info"]["virustotal"] = stats or vt
+        if stats and stats.get("malicious", 0) >= 1:
+            result["findings"].append(
+                f"VirusTotal: {stats['malicious']} engine menandai IP ini berbahaya")
+    return result
+
+
+# ------------------------------------------------------------------ output
+
+def print_url(r):
+    print("=" * 64)
+    print(f"URL      : {r['input']}")
+    if "error" in r:
+        print(f"Error    : {r['error']}")
+        return
+    print(f"Domain   : {r['info']['registered_domain']}")
+    print(f"Skor     : {r['score']}  ->  {r['verdict']}")
+    for f in r["findings"]:
+        print(f"  [+{f['points']:>2}] {f['text']}")
+    if not r["findings"]:
+        print("  (tidak ada indikator mencurigakan terdeteksi)")
+    info = r["info"]
+    print(f"Usia domain : {info.get('domain_age_days')}")
+    if "tls" in info:
+        t = info["tls"]
+        if t.get("valid"):
+            print(f"TLS         : {t['issuer']} ({t['not_before']} s/d {t['not_after']})")
+        else:
+            print(f"TLS         : bermasalah - {t.get('error')}")
+    if "virustotal" in info:
+        print(f"VirusTotal  : {info['virustotal']}")
+    if info.get("redirect_chain"):
+        print("Redirect chain:")
+        for i, h in enumerate(info["redirect_chain"], 1):
+            print(f"  {i}. [{h['status']}] {h['url']}")
+
+
+def print_ip(r):
+    print("=" * 64)
+    print(f"IP       : {r['input']}")
+    if "error" in r:
+        print(f"Error    : {r['error']}")
+        return
+    for k, v in r["info"].items():
+        if isinstance(v, dict):
+            print(f"{k}:")
+            for kk, vv in v.items():
+                print(f"  {kk:<18}: {vv}")
+        else:
+            print(f"{k:<9}: {v}")
+    for f in r["findings"]:
+        print(f"  [!] {f}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="OSINT toolkit pasif: verifikasi URL phishing & analisis IP")
+    ap.add_argument("--no-banner", action="store_true", help="sembunyikan banner BroCode")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    pu = sub.add_parser("url", help="analisis risiko phishing URL")
+    pu.add_argument("targets", nargs="+")
+    pu.add_argument("--no-fetch", action="store_true",
+                    help="jangan mengikuti redirect / cek TLS (analisis statis saja)")
+    pu.add_argument("--json", action="store_true")
+
+    pi = sub.add_parser("ip", help="analisis IP & jaringan")
+    pi.add_argument("targets", nargs="+")
+    pi.add_argument("--json", action="store_true")
+
+    args = ap.parse_args()
+    if not args.no_banner:
+        # untuk --json, banner dikirim ke stderr agar output JSON tetap bersih
+        print_banner(sys.stderr if args.json else sys.stdout)
+    if args.cmd == "url":
+        results = [analyze_url(t, fetch=not args.no_fetch) for t in args.targets]
+        printer = print_url
+    else:
+        results = [analyze_ip(t) for t in args.targets]
+        printer = print_ip
+
+    if args.json:
+        print(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+    else:
+        for r in results:
+            printer(r)
+
+
+if __name__ == "__main__":
+    main()
