@@ -7,7 +7,7 @@ class BroCodeOSINTCLIPro:
     def __init__(self):
         self.db_name = "osint_registry.db"
         self.operator = "Hack123"
-        self.version = "v3.0-PRO"
+        self.version = "v3.5-PRO"
 
     def init_database(self):
         conn = sqlite3.connect(self.db_name)
@@ -146,6 +146,68 @@ class BroCodeOSINTCLIPro:
             print(f"\n\033[91m[!] ALERT: Tanda tangan identitas target '{query_param}' tidak ditemukan.\033[0m")
         print("-" * 75)
 
+    def trace_phone_location(self):
+        print("\n\033[93m[+] MODUL: GEOLOCATION & PHONE IP TELEMETRY\033[0m")
+        phone_num = input("Masukkan Nomor HP Target (Contoh: 085196244739): ").strip()
+        if not phone_num:
+            print("\033[91m[!] Error: Nomor HP wajib diisi!\033[0m")
+            return
+
+        self.simulate_loading("Mengurai format kode negara (MSISDN)")
+        self.simulate_loading("Mencari alokasi HLR (Home Location Register)")
+        self.simulate_loading("Melakukan resolusi Base Transceiver Station (BTS) terdekat")
+
+        clean_phone = phone_num
+        if clean_phone.startswith("0"):
+            clean_phone = "62" + clean_phone[1:]
+        
+        operator = "UNKNOWN_PROVIDER"
+        region = "Indonesia_Regional"
+        mock_ip = "182.253.45.112"
+        lat, lon = "-7.9666", "112.6326"
+
+        if "812" in clean_phone or "811" in clean_phone or "813" in clean_phone:
+            operator = "Telkomsel"
+            region = "Jawa Timur, Indonesia"
+            mock_ip = "180.244.192.44"
+        elif "817" in clean_phone or "818" in clean_phone or "859" in clean_phone:
+            operator = "XL Axiata"
+            region = "Jawa Barat, Indonesia"
+            mock_ip = "112.215.32.88"
+        elif "856" in clean_phone or "857" in clean_phone:
+            operator = "Indosat Ooredoo"
+            region = "DKI Jakarta, Indonesia"
+            mock_ip = "202.152.19.102"
+        elif "896" in clean_phone or "897" in clean_phone:
+            operator = "Tri (3)"
+            region = "Jawa Tengah, Indonesia"
+            mock_ip = "103.94.180.5"
+
+        location_payload = {
+            "engine": f"BroCodehaha123 {self.version} [TELECOM_RESOLVER]",
+            "phone_target": phone_num,
+            "msisdn_format": f"+{clean_phone}",
+            "telemetry_data": {
+                "carrier": operator,
+                "assigned_region": region,
+                "network_status": "ONLINE_ACTIVE",
+                "resolved_gateway_ip": mock_ip,
+                "coordinates": {
+                    "latitude": lat,
+                    "longitude": lon
+                },
+                "live_map_link": f"https://google.com{lat},{lon}"
+            }
+        }
+
+        print("\n\033[96m" + json.dumps(location_payload, indent=4) + "\033[0m")
+        print("\n\033[92m[*] VISUALIZING GEOLOCATION NETWORK PATH:\033[0m")
+        print(f"    \033[91m[PHONE]\033[0m +{clean_phone} \033[93m──(REGISTERED_TO)──>\033[0m Telco_Cellular_{operator}")
+        print(f"    \033[91m[CARRIER]\033[0m Telco_Cellular_{operator} \033[93m──(ROUTED_THROUGH)──>\033[0m Gateway_IP_{mock_ip}")
+        print(f"    \033[91m[IP_NODE]\033[0m Gateway_IP_{mock_ip} \033[93m──(GEOLOCATED_AT)──>\033[0m Coordinate_{lat}_{lon}_({region})")
+        print(f"    \033[95m[MAP_LINK]\033[0m https://google.com{lat},{lon}")
+        print("-" * 75)
+
     def interactive_menu(self):
         self.init_database()
         while True:
@@ -154,7 +216,8 @@ class BroCodeOSINTCLIPro:
             print(" [1] Jalankan Intel Lookup & Visualisasi Grafik Relasi")
             print(" [2] Tambah Rekord Target Baru ke Database")
             print(" [3] Tampilkan Semua Target Terdaftar")
-            print(" [4] Keluar dari Sistem (Exit)")
+            print(" [4] Jalankan Geolocation & IP Telemetry (Lacak No HP)")
+            print(" [5] Keluar dari Sistem (Exit)")
             print("-" * 75)
             
             pilihan = input("BroCodehaha123_#> ").strip()
@@ -163,19 +226,3 @@ class BroCodeOSINTCLIPro:
                 self.execute_lookup()
             elif pilihan == "2":
                 self.add_target()
-            elif pilihan == "3":
-                self.view_all_targets()
-            elif pilihan == "4":
-                print("\n[*] Menutup repositori database eksekusi. Sistem dibersihkan.")
-                break
-            else:
-                print("\n\033[91m[!] Opsi pilihan modul tidak valid!\033[0m")
-            
-            input("\nTekan [Enter] untuk kembali ke Menu Utama...")
-
-def main():
-    cli_engine = BroCodeOSINTCLIPro()
-    cli_engine.interactive_menu()
-
-if __name__ == "__main__":
-    main()
