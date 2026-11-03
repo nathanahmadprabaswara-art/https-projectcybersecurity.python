@@ -1,4 +1,3 @@
-cat << 'EOF' > BroCodeV3.py
 import sys
 import json
 import sqlite3
@@ -23,7 +22,6 @@ class BroCodeOSINTCLIPro:
             )
         """)
         
-        # Seed awal otomatis jika database kosong
         cursor.execute("SELECT COUNT(*) FROM targets")
         if cursor.fetchone()[0] == 0:
             sample_nodes = [
@@ -67,10 +65,12 @@ class BroCodeOSINTCLIPro:
         full_name = input("Masukkan Nama Lengkap Target: ").strip()
         leak_status = input("Masukkan Status Kebocoran Data (Contoh: CRITICAL_LEAK): ").strip()
         
-        # Buat grafik relasi dinamis berbasis data input
+        target_clean = full_name.replace(" ", "_")
+        param_list = query_string.split(",") if "," in query_string else [query_string]
+        
         custom_nodes = [
-            {"source": full_name.replace(" ", "_"), "relation": "IDENTIFIED_BY", "target": query_string.split(",")[0]},
-            {"source": query_string.split(",")[0], "relation": "HAS_TELEMETRY", "target": "Network_Node_Active"}
+            {"source": target_clean, "relation": "IDENTIFIED_BY", "target": str(param_list)},
+            {"source": str(param_list), "relation": "HAS_TELEMETRY", "target": "Network_Node_Active"}
         ]
         
         conn = sqlite3.connect(self.db_name)
@@ -179,4 +179,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
