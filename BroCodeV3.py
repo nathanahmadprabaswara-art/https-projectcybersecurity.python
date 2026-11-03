@@ -1,5 +1,6 @@
 import sys
 import json
+import sqlite3
 import urllib.request
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -11,9 +12,91 @@ class BroCodehaha123Handler(BaseHTTPRequestHandler):
     def _send_response(self, status, content_type, body):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("X-Engine", "BroCodehaha123")
+        self.send_header("X-Engine", "BroCodehaha123-DB")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
+
+    def init_database(self):
+        conn = sqlite3.connect("osint_registry.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_string TEXT UNIQUE,
+                full_name TEXT,
+                leak_status TEXT,
+                nodes_data TEXT
+            )
+        """)
+        
+        sample_nodes = [
+            {"source": "Target_Identity", "relation": "MAPPED_TO", "target": "Digital_Footprint"},
+            {"source": "Digital_Footprint", "relation": "LINKED_WITH", "target": "Network_Telemetry"},
+            {"source": "Network_Telemetry", "relation": "RESOLVED_BY", "target": "BroCodehaha123_Core"}
+        ]
+        
+        try:
+            cursor.execute("""
+                INSERT INTO targets (query_string, full_name, leak_status, nodes_data)
+                VALUES (?, ?, ?, ?)
+            """, (
+                "Nathan,nathanahmadprabaswara@gmail.com,081232253524", 
+                "Nathan Ahmad Prabaswara", 
+                "CRITICAL_LEAK_FOUND", 
+                json.dumps(sample_nodes)
+            ))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+        finally:
+            conn.close()
+
+    def _query_local_database(self, query_param):
+        conn = sqlite3.connect("osint_registry.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT full_name, leak_status, nodes_data FROM targets WHERE query_string = ?", (query_param,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "engine": "BroCodehaha123 v3.0 [DB_CONNECTED]",
+                "query_resolved": query_param,
+                "status": "SUCCESS",
+                "registry_dump": {
+                    "identity": {
+                        "matched_records": 1,
+                        "probable_full_name": row[0],
+                        "national_id_status": "INDEXED_VERIFIED"
+                    },
+                    "digital_footprint": {
+                        "breached_databases": ["2022_DataLeak_Combo", "2024_Ecom_Dump", row[1]],
+                        "social_networks": [
+                            {"platform": "github", "status": "active"},
+                            {"platform": "linkedin", "status": "stale"}
+                        ]
+                    },
+                    "network_telemetry": {
+                        "last_known_nodes": ["192.168.1.45", "127.0.0.1"],
+                        "hostmask_resolutions": "ISP_RESOLVED_STATIC",
+                        "graph_nodes": json.loads(row[2])
+                    }
+                }
+            }
+        else:
+            return {
+                "engine": "BroCodehaha123 v3.0 [DB_LIVE]",
+                "query_resolved": query_param,
+                "status": "RECORD_NOT_FOUND_IN_LOCAL_DB",
+                "registry_dump": {
+                    "identity": {"matched_records": 0, "probable_full_name": "Unknown Entity"},
+                    "network_telemetry": {
+                        "graph_nodes": [
+                            {"source": f"ID_{query_param}", "relation": "UNRESOLVED_TARGET", "target": "Null_Node"}
+                        ]
+                    }
+                }
+            }
 
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
@@ -92,10 +175,6 @@ class BroCodehaha123Handler(BaseHTTPRequestHandler):
             color: #ff0055;
             animation: blink 1s infinite;
         }
-        .network-node {
-            color: #00ffff;
-            font-weight: bold;
-        }
         @keyframes blink {
             50% { opacity: 0; }
         }
@@ -112,12 +191,12 @@ class BroCodehaha123Handler(BaseHTTPRequestHandler):
 | |_) | | | (_) | |__| (_) | (_| |  __/ | | | (_| | | | | (_| | | |  ___) |___) |
 |____/|_|  \___/ \____\___/ \__,_|\___|_| |_|\__,_|_| |_|\__,_|_|_| |____/|____/ 
             </pre>
-            <div>SYSTEM STATUS: <span class="status-active">READY_TO_SCAN</span> | OPERATOR: alpin67</div>
+            <div>SYSTEM STATUS: <span class="status-active">DATABASE_CONNECTED</span> | OPERATOR: Hack123</div>
         </div>
         
         <div class="input-line">
             <span class="prompt">BroCodehaha123_#> INPUT_TARGET:</span>
-            <input type="text" id="targetInput" placeholder="Nama, Email, Username, atau Phone...">
+            <input type="text" id="targetInput" placeholder="Nama, Email, Username, atau Phone..." value="Nathan,nathanahmadprabaswara@gmail.com,081232253524">
             <button onclick="runQuery()">EXECUTE</button>
         </div>
 
@@ -133,17 +212,17 @@ class BroCodehaha123Handler(BaseHTTPRequestHandler):
                 return;
             }
             
-            open_output.innerText = "[*] Initializing BroCodehaha123 footprint analyzer engine...\n";
-            open_output.innerText += "[*] Querying global endpoints for target data: " + target + "\n";
+            open_output.innerText = "[*] Initializing BroCodehaha123 SQLite query core...\\n";
+            open_output.innerText += "[*] Querying local relation tables for target data: " + target + "\\n";
             
             fetch('/api/lookup?q=' + encodeURIComponent(target))
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === "SUCCESS" && data.registry_dump.network_telemetry.graph_nodes) {
                         let renderText = JSON.stringify(data, null, 4);
-                        renderText += "\n\n[*] VISUALIZING GRAPH INTERACTION MAP:\n";
+                        renderText += "\\n\\n[*] VISUALIZING GRAPH INTERACTION MAP (SQLITE_LIVE):\\n";
                         data.registry_dump.network_telemetry.graph_nodes.forEach(node => {
-                            renderText += "    [ENTITAS] " + node.source + " ──(" + node.relation + ")──> " + node.target + "\n";
+                            renderText += "    [ENTITAS] " + node.source + " ──(" + node.relation + ")──> " + node.target + "\\n";
                         });
                         open_output.innerText = renderText;
                     } else {
@@ -164,52 +243,20 @@ class BroCodehaha123Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed_url.query)
             query_string = params.get("q", [""])[0]
             
-            result_payload = self._gather_osint_mockdata(query_string)
+            result_payload = self._query_local_database(query_string)
             self._send_response(200, "application/json", json.dumps(result_payload))
         else:
             self._send_response(404, "text/plain", "Not Found")
 
-    def _gather_osint_mockdata(self, query):
-        return {
-            "engine": "BroCodehaha123 v3.0",
-            "query_resolved": query,
-            "status": "SUCCESS",
-            "registry_dump": {
-                "identity": {
-                    "matched_records": 1,
-                    "probable_full_name": f"Target Record ({query})",
-                    "national_id_status": "INDEXED_VERIFIED"
-                },
-                "digital_footprint": {
-                    "breached_databases": ["2022_DataLeak_Combo", "2024_Ecom_Dump"],
-                    "social_networks": [
-                        {"platform": "github", "status": "active", "url": f"https://github.com/{query}"},
-                        {"platform": "linkedin", "status": "stale"}
-                    ]
-                },
-                "network_telemetry": {
-                    "last_known_nodes": ["192.168.1.45", "127.0.0.1"],
-                    "hostmask_resolutions": "ISP_RESOLVED_STATIC",
-                    "graph_nodes": [
-                        {"source": f"ID_{query}", "relation": "MAPPED_TO", "target": "Digital_Footprint"},
-                        {"source": "Digital_Footprint", "relation": "LINKED_WITH", "target": "Network_Telemetry"},
-                        {"source": "Network_Telemetry", "relation": "RESOLVED_BY", "target": "BroCodehaha123_Core"}
-                    ]
-                }
-            }
-        }
-
 def main():
     port = 8080
     server_address = ('', port)
+    
+    initializer = BroCodehaha123Handler
+    initializer.init_database(initializer)
+    
     httpd = HTTPServer(server_address, BroCodehaha123Handler)
-    print(f"[*] BroCodehaha123 UI Engine deployed successfully via BroCodeV3.py.")
+    print(f"[*] BroCodehaha123 SQLITE Engine deployed successfully via BroCodeV3.py.")
     print(f"[*] Local access link available at: http://localhost:{port}")
     try:
         httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[!] Server framework interrupted. Cleaning resources.")
-        sys.exit(0)
-
-if __name__ == "__main__":
-    main()
