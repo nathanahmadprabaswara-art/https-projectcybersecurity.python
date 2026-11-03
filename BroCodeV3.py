@@ -258,5 +258,12 @@ def main():
     httpd = HTTPServer(server_address, BroCodehaha123Handler)
     print(f"[*] BroCodehaha123 SQLITE Engine deployed successfully via BroCodeV3.py.")
     print(f"[*] Local access link available at: http://localhost:{port}")
-    try:
+        try:
         httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[!] Server framework interrupted. Cleaning resources.")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+
