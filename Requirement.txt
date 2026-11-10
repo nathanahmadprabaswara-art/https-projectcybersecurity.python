@@ -1,0 +1,8 @@
+# =================================
+# GHOSTSCOUT - REQUIREMENTS
+# Author: Unknown
+# =================================
+
+# Python version: 3.10+
+# External dependencies: None
+# Uses Python Standard Library only.
