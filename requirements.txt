@@ -1,0 +1,2 @@
+# Optional, for accurate CPU/RAM metrics
+psutil>=5.9
