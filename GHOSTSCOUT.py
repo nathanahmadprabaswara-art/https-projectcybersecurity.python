@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
-# GHOSTSCOUT v7.1
-# Defensive System & Network Intelligence CLI
-# Kali Linux / Linux
+# GHOSTSCOUT v3.0
+# Advanced Cyber Terminal | Kali Linux Edition
+# Defensive monitoring and local security diagnostics
 # ============================================================
 
 import os
@@ -11,11 +11,12 @@ import json
 import time
 import socket
 import shutil
-import ipaddress
+import random
+import base64
 import platform
 import subprocess
+import ipaddress
 import tempfile
-import base64
 from pathlib import Path
 from datetime import datetime
 
@@ -29,38 +30,132 @@ try:
     from rich.live import Live
     from rich.layout import Layout
     from rich.align import Align
-    from rich.progress import Progress, SpinnerColumn, TextColumn
 except ImportError:
     print("Install dependencies:")
     print("pip install rich psutil requests")
     sys.exit(1)
 
-# Optional music support
 try:
     import pygame
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
 
+
+# ------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------
+
 APP_NAME = "GHOSTSCOUT"
-VERSION = "7.1"
+VERSION = "3.0"
 
 console = Console()
+BASE_DIR = Path(__file__).resolve().parent
 
-# ------------------------------------------------------------
-# EMBEDDED AUDIO
-# Paste the Base64-encoded MP3 data between the triple quotes.
-# Leave empty to disable music.
-# ------------------------------------------------------------
+LOG_FILE = BASE_DIR / "ghostscout_logs.jsonl"
+DEVICE_FILE = BASE_DIR / "ghostscout_devices.json"
+SETTINGS_FILE = BASE_DIR / "ghostscout_settings.json"
 
+# Optional embedded MP3.
+# Paste the Base64 audio data between the quotes.
 AUDIO_B64 = r"""
 """
 
-_audio_temp = None
+audio_temp = None
 
+DEFAULT_SETTINGS = {
+    "animation": True,
+    "music": True
+}
+
+
+def load_settings():
+    if SETTINGS_FILE.exists():
+        try:
+            data = json.loads(SETTINGS_FILE.read_text())
+            return {**DEFAULT_SETTINGS, **data}
+        except Exception:
+            pass
+    return DEFAULT_SETTINGS.copy()
+
+
+settings = load_settings()
+
+
+# ------------------------------------------------------------
+# UTILITIES
+# ------------------------------------------------------------
+
+def clear():
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def now():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def full_time():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def pause():
+    console.input("\n[dim]Press Enter to continue...[/dim]")
+
+
+def log_event(message, level="INFO"):
+    entry = {
+        "time": full_time(),
+        "level": level,
+        "event": message
+    }
+
+    try:
+        with LOG_FILE.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def panel_title(title):
+    return Panel(
+        Align.center(
+            f"[bold bright_green]{title}[/bold bright_green]"
+        ),
+        border_style="bright_green"
+    )
+
+
+def get_uptime():
+    seconds = int(time.time() - psutil.boot_time())
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s"
+
+
+def run_readonly_command(command, timeout=5):
+    """Run a fixed, read-only local diagnostic command."""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+        return result.stdout.strip() or result.stderr.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "Unavailable"
+
+
+# ------------------------------------------------------------
+# AUDIO
+# ------------------------------------------------------------
 
 def play_music():
-    global _audio_temp
+    global audio_temp
+
+    if not settings.get("music", True):
+        return
 
     if not AUDIO_B64.strip() or not PYGAME_AVAILABLE:
         return
@@ -69,17 +164,20 @@ def play_music():
         if not pygame.mixer.get_init():
             pygame.mixer.init()
 
-        if _audio_temp is None:
-            audio_data = base64.b64decode(AUDIO_B64)
+        if audio_temp is None:
+            audio_bytes = base64.b64decode(AUDIO_B64)
+
             handle = tempfile.NamedTemporaryFile(
-                suffix=".mp3", delete=False
+                suffix=".mp3",
+                delete=False
             )
-            handle.write(audio_data)
+            handle.write(audio_bytes)
             handle.close()
-            _audio_temp = handle.name
+
+            audio_temp = handle.name
 
         pygame.mixer.music.stop()
-        pygame.mixer.music.load(_audio_temp)
+        pygame.mixer.music.load(audio_temp)
         pygame.mixer.music.play()
 
     except Exception:
@@ -87,7 +185,7 @@ def play_music():
 
 
 def stop_music():
-    global _audio_temp
+    global audio_temp
 
     if PYGAME_AVAILABLE:
         try:
@@ -96,124 +194,114 @@ def stop_music():
         except Exception:
             pass
 
-    if _audio_temp:
+    if audio_temp:
         try:
-            os.remove(_audio_temp)
+            os.remove(audio_temp)
         except OSError:
             pass
 
 
 # ------------------------------------------------------------
-# GENERAL UTILITIES
+# BOOT ANIMATION
 # ------------------------------------------------------------
-
-def clear():
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-def timestamp():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def pause():
-    console.input("\n[dim]Press Enter to continue...[/dim]")
-
-
-def log_event(message):
-    entry = {
-        "time": timestamp(),
-        "event": message
-    }
-
-    try:
-        with open("ghostscout_logs.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError:
-        pass
-
-
-def banner():
-    clear()
-
-    title = Text()
-    title.append("GHOST", style="bold bright_green")
-    title.append("SCOUT", style="bold white")
-    title.append(f"  v{VERSION}", style="dim")
-
-    console.print(
-        Panel(
-            Align.center(title),
-            subtitle="[dim]SYSTEM & NETWORK INTELLIGENCE[/dim]",
-            border_style="green",
-            padding=(1, 2)
-        )
-    )
-
 
 def matrix_intro():
     clear()
-    console.print("[green]Initializing GHOSTSCOUT...[/green]\n")
 
-    import random
+    messages = [
+        "Initializing GhostScout Kernel...",
+        "Loading system modules...",
+        "Checking local network interfaces...",
+        "Preparing diagnostic modules...",
+        "Starting dashboard..."
+    ]
 
-    chars = "01ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    console.print("[bold green]GHOSTSCOUT - BOOT SEQUENCE[/bold green]\n")
 
-    for _ in range(9):
-        line = "".join(random.choice(chars) for _ in range(65))
-        console.print(line, style="green", highlight=False)
-        time.sleep(0.07)
+    for message in messages:
+        console.print(
+            f"[green][+][/green] {message} [bold green][OK][/bold green]"
+        )
+        time.sleep(0.25 if settings.get("animation") else 0)
 
-    console.print("\n[bold green]SYSTEM READY[/bold green]")
-    time.sleep(0.7)
+    if settings.get("animation"):
+        console.print()
 
+        chars = "01ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-def get_uptime():
-    seconds = int(time.time() - psutil.boot_time())
-    hours, remainder = divmod(seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return f"{hours}h {minutes}m"
+        for _ in range(5):
+            line = "".join(random.choice(chars) for _ in range(60))
+            console.print(line, style="green")
+            time.sleep(0.06)
+
+    console.print(
+        "\n[bold bright_green]WELCOME TO GHOSTSCOUT[/bold bright_green]"
+    )
+    time.sleep(0.6)
 
 
 # ------------------------------------------------------------
-# SYSTEM INFORMATION
+# SYSTEM OVERVIEW
 # ------------------------------------------------------------
 
-def system_info():
+def system_information():
+    memory = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+
     return {
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
-        "architecture": platform.machine(),
-        "python": platform.python_version(),
-        "uptime": get_uptime(),
-        "cpu": psutil.cpu_percent(interval=0.2),
-        "ram": psutil.virtual_memory().percent,
+        "cpu": psutil.cpu_percent(interval=0.1),
+        "ram": memory.percent,
         "disk": psutil.disk_usage("/").percent,
+        "swap": swap.percent,
+        "uptime": get_uptime()
     }
 
 
-def diagnostics():
-    banner()
+def system_diagnostics():
+    clear()
+    console.print(panel_title("SYSTEM DIAGNOSTICS"))
 
-    info = system_info()
+    info = system_information()
 
-    table = Table(
-        title="SYSTEM DIAGNOSTICS",
-        border_style="green"
-    )
-
+    table = Table(border_style="green")
     table.add_column("Component", style="cyan")
-    table.add_column("Information", style="white")
+    table.add_column("Value", style="white")
 
     for key, value in info.items():
         table.add_row(key.upper(), str(value))
 
     console.print(table)
+
+    processes = sorted(
+        psutil.process_iter(["pid", "name", "username"]),
+        key=lambda process: process.info.get("pid") or 0
+    )
+
+    process_table = Table(
+        title="LOCAL PROCESSES",
+        border_style="green"
+    )
+    process_table.add_column("PID")
+    process_table.add_column("Process")
+    process_table.add_column("User")
+
+    for process in processes[:15]:
+        data = process.info
+        process_table.add_row(
+            str(data.get("pid", "")),
+            str(data.get("name", "Unknown")),
+            str(data.get("username", "Unknown"))
+        )
+
+    console.print(process_table)
     log_event("System diagnostics viewed")
     pause()
 
 
 # ------------------------------------------------------------
-# NETWORK INFORMATION
+# NETWORK STATUS
 # ------------------------------------------------------------
 
 def network_interfaces():
@@ -225,25 +313,36 @@ def network_interfaces():
     table.add_column("Interface", style="cyan")
     table.add_column("Address")
     table.add_column("Family")
+    table.add_column("Status")
+
+    interface_stats = psutil.net_if_stats()
 
     for interface, addresses in psutil.net_if_addrs().items():
+        status = (
+            "UP" if interface_stats.get(interface)
+            and interface_stats[interface].isup
+            else "DOWN"
+        )
+
         for address in addresses:
-            if address.family in (
-                socket.AF_INET,
-                socket.AF_INET6
-            ):
+            if address.family in (socket.AF_INET, socket.AF_INET6):
+                family = (
+                    "IPv4" if address.family == socket.AF_INET
+                    else "IPv6"
+                )
+
                 table.add_row(
                     interface,
                     address.address,
-                    "IPv4" if address.family == socket.AF_INET
-                    else "IPv6"
+                    family,
+                    status
                 )
 
     console.print(table)
 
 
-def network_stats():
-    stats = psutil.net_io_counters()
+def network_traffic():
+    counters = psutil.net_io_counters()
 
     table = Table(
         title="NETWORK TRAFFIC",
@@ -253,130 +352,208 @@ def network_stats():
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
 
-    table.add_row("Bytes sent", f"{stats.bytes_sent:,}")
-    table.add_row("Bytes received", f"{stats.bytes_recv:,}")
-    table.add_row("Packets sent", f"{stats.packets_sent:,}")
-    table.add_row("Packets received", f"{stats.packets_recv:,}")
+    table.add_row("Bytes sent", f"{counters.bytes_sent:,}")
+    table.add_row("Bytes received", f"{counters.bytes_recv:,}")
+    table.add_row("Packets sent", f"{counters.packets_sent:,}")
+    table.add_row("Packets received", f"{counters.packets_recv:,}")
 
     console.print(table)
 
 
-def analyze_ip():
-    banner()
-    console.print("[bold green]IP / CIDR ANALYSIS[/bold green]")
+# ------------------------------------------------------------
+# NMAP LOCAL SECURITY AUDIT
+# Restricted to localhost.
+# ------------------------------------------------------------
 
-    value = console.input("\nEnter IP or CIDR: ").strip()
+def nmap_local_audit():
+    clear()
+    console.print(panel_title("NMAP LOCAL SECURITY AUDIT"))
+
+    nmap_path = shutil.which("nmap")
+
+    if not nmap_path:
+        console.print("[yellow]Nmap is not installed.[/yellow]")
+        console.print("Install: sudo apt install nmap")
+        pause()
+        return
+
+    console.print("[cyan]Target:[/cyan] 127.0.0.1")
+    console.print("[dim]Scope: localhost only; common TCP ports.[/dim]")
+    console.print("[dim]No remote target input is accepted.[/dim]\n")
+
+    command = [
+        nmap_path,
+        "-sT",
+        "-F",
+        "-n",
+        "--reason",
+        "127.0.0.1"
+    ]
+
+    try:
+        with console.status(
+            "[bold green]Checking localhost...[/bold green]"
+        ):
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False
+            )
+
+        output = result.stdout.strip() or result.stderr.strip()
+
+        console.print(
+            Panel(
+                output or "No output returned.",
+                title="NMAP RESULT",
+                border_style="green"
+            )
+        )
+
+        log_event("Nmap localhost audit completed")
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Nmap audit timed out.[/red]")
+        log_event("Nmap localhost audit timed out", "WARNING")
+
+    except Exception as error:
+        console.print(f"[red]Nmap error: {error}[/red]")
+        log_event("Nmap error", "ERROR")
+
+    pause()
+
+
+def network_scanner():
+    while True:
+        clear()
+        console.print(panel_title("NETWORK SCANNER"))
+
+        network_interfaces()
+        network_traffic()
+
+        console.print("\n[green]1.[/green] Nmap localhost audit")
+        console.print("[green]2.[/green] Refresh network status")
+        console.print("[green]0.[/green] Back")
+
+        choice = console.input(
+            "\n[bold green]GHOSTSCOUT > [/bold green]"
+        ).strip()
+
+        if choice == "1":
+            nmap_local_audit()
+        elif choice == "2":
+            continue
+        elif choice == "0":
+            return
+
+
+# ------------------------------------------------------------
+# SECURITY TOOLS
+# Read-only local security checks.
+# ------------------------------------------------------------
+
+def security_tools():
+    clear()
+    console.print(panel_title("LOCAL SECURITY STATUS"))
+
+    table = Table(border_style="green")
+    table.add_column("Check", style="cyan")
+    table.add_column("Result")
+
+    ufw = run_readonly_command(["ufw", "status"])
+    firewall = run_readonly_command(["firewall-cmd", "--state"])
+
+    table.add_row("UFW", ufw[:500])
+    table.add_row("Firewalld", firewall[:200])
+    table.add_row(
+        "Current user",
+        os.environ.get("USER", "Unknown")
+    )
+    table.add_row(
+        "Python version",
+        platform.python_version()
+    )
+
+    console.print(table)
+
+    console.print(
+        "\n[dim]These checks report local status only. "
+        "They do not change firewall settings.[/dim]"
+    )
+
+    log_event("Local security status checked")
+    pause()
+
+
+# ------------------------------------------------------------
+# IP / CIDR INFORMATION
+# ------------------------------------------------------------
+
+def ip_analysis():
+    clear()
+    console.print(panel_title("IP / CIDR ANALYSIS"))
+
+    value = console.input("Enter IP or CIDR: ").strip()
 
     try:
         if "/" in value:
             network = ipaddress.ip_network(value, strict=False)
-            result = [
-                ("Network", str(network.network_address)),
-                ("Broadcast", str(network.broadcast_address)),
-                ("Netmask", str(network.netmask)),
-                ("Prefix", str(network.prefixlen)),
-                ("Total addresses", str(network.num_addresses)),
-                ("Version", f"IPv{network.version}")
-            ]
+
+            results = {
+                "Network": network.network_address,
+                "Broadcast": network.broadcast_address,
+                "Netmask": network.netmask,
+                "Prefix": network.prefixlen,
+                "Total addresses": network.num_addresses,
+                "Version": f"IPv{network.version}"
+            }
         else:
             address = ipaddress.ip_address(value)
-            result = [
-                ("Address", str(address)),
-                ("Version", f"IPv{address.version}"),
-                ("Private", str(address.is_private)),
-                ("Global", str(address.is_global)),
-                ("Loopback", str(address.is_loopback)),
-                ("Multicast", str(address.is_multicast))
-            ]
+
+            results = {
+                "Address": address,
+                "Version": f"IPv{address.version}",
+                "Private": address.is_private,
+                "Global": address.is_global,
+                "Loopback": address.is_loopback,
+                "Multicast": address.is_multicast
+            }
 
         table = Table(title="ANALYSIS RESULT", border_style="green")
         table.add_column("Property", style="cyan")
         table.add_column("Value")
 
-        for key, val in result:
-            table.add_row(key, val)
+        for key, val in results.items():
+            table.add_row(key, str(val))
 
         console.print(table)
         log_event(f"IP analysis: {value}")
 
-    except ValueError as error:
-        console.print(f"[red]Invalid IP/CIDR: {error}[/red]")
+    except ValueError:
+        console.print("[red]Invalid IP address or CIDR.[/red]")
 
     pause()
 
 
-def network_analysis():
-    banner()
-    network_interfaces()
-    network_stats()
-
-    console.print("\n[bold green]1.[/bold green] Analyze IP/CIDR")
-    console.print("[bold green]2.[/bold green] Ping diagnostic")
-    console.print("[bold green]0.[/bold green] Back")
-
-    choice = console.input("\nSelect: ").strip()
-
-    if choice == "1":
-        analyze_ip()
-
-    elif choice == "2":
-        host = console.input("Host or IP to test: ").strip()
-
-        if not host or any(c.isspace() for c in host):
-            console.print("[red]Invalid input.[/red]")
-            pause()
-            return
-
-        try:
-            console.print(f"\nTesting connectivity to {host}...")
-            result = subprocess.run(
-                ["ping", "-c", "4", "-W", "2", host],
-                capture_output=True,
-                text=True,
-                timeout=12
-            )
-
-            console.print(result.stdout or result.stderr)
-            log_event(f"Connectivity diagnostic: {host}")
-
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            console.print("[red]Ping unavailable or timed out.[/red]")
-
-        pause()
-
-
 # ------------------------------------------------------------
 # PASSIVE OSINT
-# Public DNS and RDAP metadata only.
+# Public DNS and RDAP metadata.
 # ------------------------------------------------------------
 
-def dns_lookup(domain, record_type):
-    url = "https://dns.google/resolve"
-
-    response = requests.get(
-        url,
-        params={"name": domain, "type": record_type},
-        timeout=8,
-        headers={"User-Agent": "GHOSTSCOUT/7.1"}
-    )
-
-    response.raise_for_status()
-    data = response.json()
-
-    return [
-        item.get("data", "")
-        for item in data.get("Answer", [])
-    ]
-
-
 def passive_osint():
-    banner()
-    console.print("[bold green]PASSIVE DOMAIN INTELLIGENCE[/bold green]")
-    console.print("[dim]Public DNS and registration metadata only.[/dim]")
+    clear()
+    console.print(panel_title("PASSIVE DOMAIN OSINT"))
 
-    domain = console.input("\nDomain: ").strip().lower()
+    domain = console.input("Domain: ").strip().lower()
 
-    if not domain or "/" in domain or " " in domain:
+    if (
+        not domain
+        or "/" in domain
+        or " " in domain
+        or len(domain) > 253
+    ):
         console.print("[red]Invalid domain.[/red]")
         pause()
         return
@@ -385,54 +562,79 @@ def passive_osint():
 
     for record in ("A", "AAAA", "MX", "NS", "TXT"):
         try:
-            results[record] = dns_lookup(domain, record)
+            response = requests.get(
+                "https://dns.google/resolve",
+                params={"name": domain, "type": record},
+                timeout=8,
+                headers={"User-Agent": "GHOSTSCOUT/3.0"}
+            )
+            response.raise_for_status()
+
+            results[record] = [
+                item.get("data", "")
+                for item in response.json().get("Answer", [])
+            ]
+
         except requests.RequestException:
-            results[record] = []
+            results[record] = ["Unavailable"]
 
     try:
         response = requests.get(
             f"https://rdap.org/domain/{domain}",
             timeout=10,
-            headers={"User-Agent": "GHOSTSCOUT/7.1"}
+            headers={"User-Agent": "GHOSTSCOUT/3.0"}
         )
 
         if response.ok:
-            rdap = response.json()
-
+            data = response.json()
             results["RDAP"] = {
-                "ldhName": rdap.get("ldhName"),
-                "status": rdap.get("status"),
-                "events": rdap.get("events", [])
+                "domain": data.get("ldhName"),
+                "status": data.get("status"),
+                "events": data.get("events")
             }
         else:
-            results["RDAP"] = {"status": "Unavailable"}
+            results["RDAP"] = "Unavailable"
 
     except requests.RequestException:
-        results["RDAP"] = {"status": "Unavailable"}
+        results["RDAP"] = "Unavailable"
 
-    table = Table(title=f"OSINT: {domain}", border_style="green")
+    table = Table(title=domain, border_style="green")
     table.add_column("Record", style="cyan")
-    table.add_column("Public data")
+    table.add_column("Public information")
 
-    for record, values in results.items():
+    for key, value in results.items():
         table.add_row(
-            record,
-            json.dumps(values, ensure_ascii=False)
+            key,
+            json.dumps(value, ensure_ascii=False)
         )
 
     console.print(table)
-
     log_event(f"Passive OSINT: {domain}")
     pause()
 
 
+def information_menu():
+    while True:
+        clear()
+        console.print(panel_title("INFORMATION & RECON"))
+
+        console.print("[green]1.[/green] IP / CIDR analysis")
+        console.print("[green]2.[/green] Passive domain OSINT")
+        console.print("[green]0.[/green] Back")
+
+        choice = console.input("\nSelect: ").strip()
+
+        if choice == "1":
+            ip_analysis()
+        elif choice == "2":
+            passive_osint()
+        elif choice == "0":
+            return
+
+
 # ------------------------------------------------------------
 # MANUAL DEVICE INVENTORY
-# No automatic discovery or network scanning.
 # ------------------------------------------------------------
-
-DEVICE_FILE = Path("ghostscout_devices.json")
-
 
 def load_devices():
     if not DEVICE_FILE.exists():
@@ -453,21 +655,20 @@ def save_devices(devices):
 
 def device_inventory():
     while True:
-        banner()
+        clear()
+        console.print(panel_title("MANUAL DEVICE INVENTORY"))
 
         devices = load_devices()
 
-        table = Table(
-            title="MANUAL DEVICE INVENTORY",
-            border_style="green"
-        )
-
-        table.add_column("Name", style="cyan")
+        table = Table(border_style="green")
+        table.add_column("#", style="green")
+        table.add_column("Device", style="cyan")
         table.add_column("IP")
         table.add_column("Notes")
 
-        for device in devices:
+        for index, device in enumerate(devices, 1):
             table.add_row(
+                str(index),
                 device.get("name", ""),
                 device.get("ip", ""),
                 device.get("notes", "")
@@ -483,7 +684,7 @@ def device_inventory():
 
         if choice == "1":
             name = console.input("Device name: ").strip()
-            address = console.input("IP address: ").strip()
+            address = console.input("IP address (optional): ").strip()
             notes = console.input("Notes: ").strip()
 
             if not name:
@@ -503,7 +704,7 @@ def device_inventory():
                 "name": name,
                 "ip": address,
                 "notes": notes,
-                "added": timestamp()
+                "added": full_time()
             })
 
             save_devices(devices)
@@ -515,13 +716,9 @@ def device_inventory():
                 pause()
                 continue
 
-            for index, device in enumerate(devices, start=1):
-                console.print(
-                    f"{index}. {device.get('name', 'Unknown')}"
-                )
-
             try:
                 number = int(console.input("Device number: "))
+
                 if 1 <= number <= len(devices):
                     removed = devices.pop(number - 1)
                     save_devices(devices)
@@ -536,33 +733,53 @@ def device_inventory():
 
 
 # ------------------------------------------------------------
+# LOG VIEWER
+# ------------------------------------------------------------
+
+def log_viewer():
+    clear()
+    console.print(panel_title("LIVE LOG VIEWER"))
+
+    if not LOG_FILE.exists():
+        console.print("[yellow]No logs available.[/yellow]")
+        pause()
+        return
+
+    table = Table(border_style="green")
+    table.add_column("Time", style="cyan")
+    table.add_column("Level")
+    table.add_column("Event")
+
+    try:
+        lines = LOG_FILE.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        for line in lines[-60:]:
+            try:
+                item = json.loads(line)
+                table.add_row(
+                    item.get("time", ""),
+                    item.get("level", "INFO"),
+                    item.get("event", "")
+                )
+            except json.JSONDecodeError:
+                continue
+
+        console.print(table)
+
+    except OSError as error:
+        console.print(f"[red]{error}[/red]")
+
+    pause()
+
+
+# ------------------------------------------------------------
 # LIVE DASHBOARD
 # ------------------------------------------------------------
 
-def dashboard():
-    banner()
-    console.print("[dim]Press Ctrl+C to return to menu.[/dim]\n")
-
-    try:
-        with Live(
-            get_dashboard_layout(),
-            console=console,
-            refresh_per_second=1,
-            screen=False
-        ) as live:
-
-            while True:
-                live.update(get_dashboard_layout())
-                time.sleep(1)
-
-    except KeyboardInterrupt:
-        pass
-
-    log_event("Dashboard viewed")
-
-
-def get_dashboard_layout():
-    info = system_info()
+def dashboard_layout():
+    info = system_information()
     traffic = psutil.net_io_counters()
 
     layout = Layout()
@@ -580,45 +797,68 @@ def get_dashboard_layout():
     layout["header"].update(
         Panel(
             Align.center(
-                "[bold green]GHOSTSCOUT // LIVE DASHBOARD[/bold green]"
+                "[bold bright_green]GHOSTSCOUT // CYBER DASHBOARD[/bold bright_green]"
             ),
             border_style="green"
         )
     )
 
-    system_table = Table.grid(padding=(0, 2))
+    system_table = Table.grid(padding=(0, 1))
     system_table.add_column(style="cyan")
     system_table.add_column(style="white")
 
-    system_table.add_row("Hostname", info["hostname"])
-    system_table.add_row("Platform", platform.system())
-    system_table.add_row("Uptime", info["uptime"])
     system_table.add_row("CPU", f"{info['cpu']}%")
     system_table.add_row("RAM", f"{info['ram']}%")
-    system_table.add_row("Disk", f"{info['disk']}%")
+    system_table.add_row("DISK", f"{info['disk']}%")
+    system_table.add_row("SWAP", f"{info['swap']}%")
+    system_table.add_row("UPTIME", info["uptime"])
+    system_table.add_row("HOST", info["hostname"])
 
     layout["system"].update(
-        Panel(system_table, title="SYSTEM STATUS", border_style="green")
+        Panel(
+            system_table,
+            title="SYSTEM OVERVIEW",
+            border_style="green"
+        )
     )
 
-    network_table = Table.grid(padding=(0, 2))
+    network_table = Table.grid(padding=(0, 1))
     network_table.add_column(style="cyan")
     network_table.add_column(style="white")
 
-    network_table.add_row("Bytes sent", f"{traffic.bytes_sent:,}")
-    network_table.add_row("Bytes received", f"{traffic.bytes_recv:,}")
-    network_table.add_row("Packets sent", f"{traffic.packets_sent:,}")
-    network_table.add_row("Packets received", f"{traffic.packets_recv:,}")
-    network_table.add_row("Interfaces", str(len(psutil.net_if_addrs())))
+    network_table.add_row(
+        "Bytes sent",
+        f"{traffic.bytes_sent:,}"
+    )
+    network_table.add_row(
+        "Bytes received",
+        f"{traffic.bytes_recv:,}"
+    )
+    network_table.add_row(
+        "Packets sent",
+        f"{traffic.packets_sent:,}"
+    )
+    network_table.add_row(
+        "Packets received",
+        f"{traffic.packets_recv:,}"
+    )
+    network_table.add_row(
+        "Interfaces",
+        str(len(psutil.net_if_addrs()))
+    )
 
     layout["network"].update(
-        Panel(network_table, title="NETWORK STATUS", border_style="green")
+        Panel(
+            network_table,
+            title="NETWORK STATUS",
+            border_style="green"
+        )
     )
 
     layout["footer"].update(
         Panel(
-            f"[green]ONLINE[/green]  |  {timestamp()}  |  "
-            "[dim]Ctrl+C to exit dashboard[/dim]",
+            f"[green]ONLINE[/green]  |  {now()}  |  "
+            "[dim]Ctrl+C to return[/dim]",
             border_style="green"
         )
     )
@@ -626,74 +866,102 @@ def get_dashboard_layout():
     return layout
 
 
-# ------------------------------------------------------------
-# ACTIVITY LOGS
-# ------------------------------------------------------------
-
-def view_logs():
-    banner()
-
-    path = Path("ghostscout_logs.jsonl")
-
-    if not path.exists():
-        console.print("[yellow]No activity logs yet.[/yellow]")
-        pause()
-        return
-
-    table = Table(title="ACTIVITY LOGS", border_style="green")
-    table.add_column("Time", style="cyan")
-    table.add_column("Event")
+def cyber_dashboard():
+    clear()
+    console.print("[dim]Press Ctrl+C to return to menu.[/dim]")
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with Live(
+            dashboard_layout(),
+            console=console,
+            refresh_per_second=1,
+            screen=False
+        ) as live:
+            while True:
+                live.update(dashboard_layout())
+                time.sleep(1)
 
-        for line in lines[-50:]:
-            try:
-                item = json.loads(line)
-                table.add_row(
-                    item.get("time", ""),
-                    item.get("event", "")
-                )
-            except json.JSONDecodeError:
-                continue
+    except KeyboardInterrupt:
+        pass
 
-        console.print(table)
-
-    except OSError as error:
-        console.print(f"[red]{error}[/red]")
-
-    pause()
+    log_event("Cyber dashboard viewed")
 
 
 # ------------------------------------------------------------
-# REPORT EXPORT
+# SETTINGS
+# ------------------------------------------------------------
+
+def settings_menu():
+    global settings
+
+    while True:
+        clear()
+        console.print(panel_title("GHOSTSCOUT SETTINGS"))
+
+        console.print(
+            f"1. Matrix animation: "
+            f"{'ON' if settings['animation'] else 'OFF'}"
+        )
+        console.print(
+            f"2. Music: "
+            f"{'ON' if settings['music'] else 'OFF'}"
+        )
+        console.print("3. Save settings")
+        console.print("0. Back")
+
+        choice = console.input("\nSelect: ").strip()
+
+        if choice == "1":
+            settings["animation"] = not settings["animation"]
+
+        elif choice == "2":
+            settings["music"] = not settings["music"]
+
+            if not settings["music"]:
+                stop_music()
+
+        elif choice == "3":
+            SETTINGS_FILE.write_text(
+                json.dumps(settings, indent=4),
+                encoding="utf-8"
+            )
+            console.print("[green]Settings saved.[/green]")
+            pause()
+
+        elif choice == "0":
+            return
+
+
+# ------------------------------------------------------------
+# EXPORT REPORT
 # ------------------------------------------------------------
 
 def export_report():
-    banner()
+    clear()
+    console.print(panel_title("EXPORT REPORT"))
 
     report = {
         "application": APP_NAME,
         "version": VERSION,
-        "generated": timestamp(),
-        "system": system_info(),
-        "network_interfaces": {},
-        "network_traffic": {},
+        "generated": full_time(),
+        "system": system_information(),
+        "interfaces": {},
+        "traffic": {},
         "manual_devices": load_devices()
     }
 
     for interface, addresses in psutil.net_if_addrs().items():
-        report["network_interfaces"][interface] = [
+        report["interfaces"][interface] = [
             {
-                "address": item.address,
-                "family": str(item.family)
+                "address": address.address,
+                "family": str(address.family)
             }
-            for item in addresses
+            for address in addresses
         ]
 
     traffic = psutil.net_io_counters()
 
-    report["network_traffic"] = {
+    report["traffic"] = {
         "bytes_sent": traffic.bytes_sent,
         "bytes_received": traffic.bytes_recv,
         "packets_sent": traffic.packets_sent,
@@ -701,22 +969,50 @@ def export_report():
     }
 
     filename = (
-        "ghostscout_report_"
-        + datetime.now().strftime("%Y%m%d_%H%M%S")
-        + ".json"
+        BASE_DIR /
+        f"ghostscout_report_{datetime.now():%Y%m%d_%H%M%S}.json"
     )
 
     try:
-        Path(filename).write_text(
+        filename.write_text(
             json.dumps(report, indent=4),
             encoding="utf-8"
         )
 
-        console.print(f"[green]Report exported: {filename}[/green]")
-        log_event(f"Report exported: {filename}")
+        console.print(f"[green]Exported: {filename.name}[/green]")
+        log_event(f"Report exported: {filename.name}")
 
     except OSError as error:
         console.print(f"[red]Export failed: {error}[/red]")
+
+    pause()
+
+
+# ------------------------------------------------------------
+# ABOUT
+# ------------------------------------------------------------
+
+def about():
+    clear()
+
+    console.print(
+        Panel(
+            "[bold bright_green]GHOSTSCOUT v3.0[/bold bright_green]\n\n"
+            "ADVANCED CYBER TERMINAL\n"
+            "KALI LINUX EDITION\n\n"
+            "System monitoring\n"
+            "Local network diagnostics\n"
+            "Nmap localhost audit\n"
+            "Passive DNS / RDAP OSINT\n"
+            "Manual device inventory\n"
+            "Security status checks\n"
+            "JSON report export\n\n"
+            "[dim]Use only on systems and networks "
+            "you own or are authorized to manage.[/dim]",
+            title="ABOUT GHOSTSCOUT",
+            border_style="green"
+        )
+    )
 
     pause()
 
@@ -727,26 +1023,26 @@ def export_report():
 
 def main_menu():
     while True:
-        banner()
+        clear()
 
         console.print(
             Panel(
-                "[bold green]GHOSTSCOUT CONTROL CENTER[/bold green]\n"
-                "[dim]Defensive system and network intelligence[/dim]",
+                "[bold bright_green]GHOSTSCOUT MENU[/bold bright_green]\n"
+                "[dim]Advanced Cyber Terminal | Kali Linux Edition[/dim]",
                 border_style="green"
             )
         )
 
-        options = [
-            ("1", "Live Dashboard"),
-            ("2", "Network & IP Analysis"),
-            ("3", "System Diagnostics"),
-            ("4", "Passive Domain OSINT"),
-            ("5", "Manual Device Inventory"),
-            ("6", "Activity Logs"),
-            ("7", "Export JSON Report"),
-            ("8", "About GHOSTSCOUT"),
-            ("0", "Exit")
+        menu = [
+            ("1", "Cyber Dashboard", "Live Monitor"),
+            ("2", "Network Scanner", "Local Audit / Nmap"),
+            ("3", "System Diagnostics", "Check System"),
+            ("4", "Security Tools", "Local Security Status"),
+            ("5", "Information", "IP / Passive OSINT"),
+            ("6", "Log Viewer", "View Activity Logs"),
+            ("7", "Settings", "Configure"),
+            ("8", "About", "About GHOSTSCOUT"),
+            ("0", "Exit", "Quit Terminal")
         ]
 
         table = Table(
@@ -755,61 +1051,48 @@ def main_menu():
             expand=True
         )
 
-        table.add_column("Option", style="bold green", width=10)
+        table.add_column("ID", style="bold green", width=5)
         table.add_column("Module", style="white")
+        table.add_column("Description", style="cyan")
 
-        for number, label in options:
-            table.add_row(number, label)
+        for number, title, description in menu:
+            table.add_row(number, title, description)
 
         console.print(table)
 
-        choice = console.input("\n[bold green]GHOSTSCOUT > [/bold green]").strip()
+        choice = console.input(
+            "\n[bold red]root@ghostscout[/bold red]"
+            "[bold green]:~# [/bold green]"
+        ).strip()
 
-        # Restart menu music after each selection.
         play_music()
 
         if choice == "1":
-            dashboard()
+            cyber_dashboard()
 
         elif choice == "2":
-            network_analysis()
+            network_scanner()
 
         elif choice == "3":
-            diagnostics()
+            system_diagnostics()
 
         elif choice == "4":
-            passive_osint()
+            security_tools()
 
         elif choice == "5":
-            device_inventory()
+            information_menu()
 
         elif choice == "6":
-            view_logs()
+            log_viewer()
 
         elif choice == "7":
-            export_report()
+            settings_menu()
 
         elif choice == "8":
-            banner()
-            console.print(
-                Panel(
-                    "[bold green]GHOSTSCOUT v7.1[/bold green]\n\n"
-                    "System diagnostics\n"
-                    "Network interface monitoring\n"
-                    "IP and CIDR analysis\n"
-                    "Passive public DNS / RDAP lookup\n"
-                    "Manual device inventory\n"
-                    "JSON reporting\n\n"
-                    "[dim]Use only on systems and networks "
-                    "you own or are authorized to manage.[/dim]",
-                    title="ABOUT",
-                    border_style="green"
-                )
-            )
-            pause()
+            about()
 
         elif choice == "0":
-            log_event("Application exited")
+            log_event("GHOSTSCOUT exited")
             break
 
         else:
@@ -828,11 +1111,13 @@ def main():
         main_menu()
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted.[/yellow]")
+        console.print("\n[yellow]Interrupted by user.[/yellow]")
 
     finally:
         stop_music()
-        console.print("\n[bold green]GHOSTSCOUT OFFLINE[/bold green]")
+        console.print(
+            "\n[bold bright_green]GHOSTSCOUT OFFLINE[/bold bright_green]"
+        )
 
 
 if __name__ == "__main__":
