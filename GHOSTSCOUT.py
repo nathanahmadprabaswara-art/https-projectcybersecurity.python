@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
-# GHOSTSCOUT v5.0
+# GHOSTSCOUT v7.1
 # Defensive System & Network Intelligence CLI
-# Created by: Unknown
-# Platform: Kali Linux / Linux
+# Kali Linux / Linux
 # ============================================================
 
 import os
@@ -11,49 +10,113 @@ import sys
 import json
 import time
 import socket
+import shutil
 import ipaddress
 import platform
 import subprocess
-import random
-import shutil
-
+import tempfile
+import base64
+from pathlib import Path
 from datetime import datetime
-from urllib.parse import quote
 
-import psutil
-import requests
+try:
+    import psutil
+    import requests
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.align import Align
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+except ImportError:
+    print("Install dependencies:")
+    print("pip install rich psutil requests")
+    sys.exit(1)
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich.live import Live
-from rich.layout import Layout
-from rich.text import Text
-from rich.align import Align
-from rich.prompt import Prompt
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich import box
+# Optional music support
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+
+APP_NAME = "GHOSTSCOUT"
+VERSION = "7.1"
 
 console = Console()
 
-APP_NAME = "GHOSTSCOUT"
-VERSION = "5.0"
-AUTHOR = "Unknown"
+# ------------------------------------------------------------
+# EMBEDDED AUDIO
+# Paste the Base64-encoded MP3 data between the triple quotes.
+# Leave empty to disable music.
+# ------------------------------------------------------------
 
-LOGS = []
-INVENTORY = []
+AUDIO_B64 = r"""
+"""
+
+_audio_temp = None
 
 
-# ============================================================
-# UTILITIES
-# ============================================================
+def play_music():
+    global _audio_temp
+
+    if not AUDIO_B64.strip() or not PYGAME_AVAILABLE:
+        return
+
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+
+        if _audio_temp is None:
+            audio_data = base64.b64decode(AUDIO_B64)
+            handle = tempfile.NamedTemporaryFile(
+                suffix=".mp3", delete=False
+            )
+            handle.write(audio_data)
+            handle.close()
+            _audio_temp = handle.name
+
+        pygame.mixer.music.stop()
+        pygame.mixer.music.load(_audio_temp)
+        pygame.mixer.music.play()
+
+    except Exception:
+        pass
+
+
+def stop_music():
+    global _audio_temp
+
+    if PYGAME_AVAILABLE:
+        try:
+            pygame.mixer.music.stop()
+            pygame.mixer.quit()
+        except Exception:
+            pass
+
+    if _audio_temp:
+        try:
+            os.remove(_audio_temp)
+        except OSError:
+            pass
+
+
+# ------------------------------------------------------------
+# GENERAL UTILITIES
+# ------------------------------------------------------------
 
 def clear():
-    os.system("clear" if os.name != "nt" else "cls")
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 def timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def pause():
+    console.input("\n[dim]Press Enter to continue...[/dim]")
 
 
 def log_event(message):
@@ -61,1221 +124,715 @@ def log_event(message):
         "time": timestamp(),
         "event": message
     }
-    LOGS.append(entry)
+
+    try:
+        with open("ghostscout_logs.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
-def pause():
-    Prompt.ask("\n[dim]Press ENTER to continue[/dim]")
-
-
-def bytes_format(value):
-    units = ["B", "KB", "MB", "GB", "TB"]
-
-    for unit in units:
-        if value < 1024:
-            return f"{value:.2f} {unit}"
-        value /= 1024
-
-    return f"{value:.2f} PB"
-
-
-def header(title="SYSTEM"):
-    console.print(
-        Panel(
-            f"[bold cyan]GHOSTSCOUT[/bold cyan] "
-            f"[dim]// {title}[/dim]\n"
-            f"[dim]DEFENSIVE INTELLIGENCE TERMINAL[/dim]",
-            border_style="cyan",
-            box=box.ROUNDED
-        )
-    )
-
-
-# ============================================================
-# MATRIX BOOT ANIMATION
-# ============================================================
-
-def matrix_boot():
+def banner():
     clear()
 
-    chars = "01ABCDEFGHIJKLMNOPQRSTUVWXYZ#$%&"
+    title = Text()
+    title.append("GHOST", style="bold bright_green")
+    title.append("SCOUT", style="bold white")
+    title.append(f"  v{VERSION}", style="dim")
 
     console.print(
-        Align.center(
-            "[bold green]GHOSTSCOUT INITIALIZATION[/bold green]"
+        Panel(
+            Align.center(title),
+            subtitle="[dim]SYSTEM & NETWORK INTELLIGENCE[/dim]",
+            border_style="green",
+            padding=(1, 2)
         )
     )
 
-    for i in range(12):
-        line = "".join(
-            random.choice(chars)
-            for _ in range(65)
-        )
 
-        console.print(
-            f"[green]{line}[/green]"
-        )
+def matrix_intro():
+    clear()
+    console.print("[green]Initializing GHOSTSCOUT...[/green]\n")
 
-        time.sleep(0.04)
+    import random
 
-    with Progress(
-        SpinnerColumn(style="cyan"),
-        TextColumn("[cyan]{task.description}"),
-        console=console
-    ) as progress:
+    chars = "01ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-        task = progress.add_task(
-            "Initializing defensive modules...",
-            total=100
-        )
+    for _ in range(9):
+        line = "".join(random.choice(chars) for _ in range(65))
+        console.print(line, style="green", highlight=False)
+        time.sleep(0.07)
 
-        while not progress.finished:
-            progress.update(
-                task,
-                advance=random.randint(5, 15)
-            )
-            time.sleep(0.12)
-
-    console.print(
-        "\n[bold green]SYSTEM READY[/bold green]"
-    )
-
-    time.sleep(0.8)
+    console.print("\n[bold green]SYSTEM READY[/bold green]")
+    time.sleep(0.7)
 
 
-# ============================================================
+def get_uptime():
+    seconds = int(time.time() - psutil.boot_time())
+    hours, remainder = divmod(seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    return f"{hours}h {minutes}m"
+
+
+# ------------------------------------------------------------
 # SYSTEM INFORMATION
-# ============================================================
+# ------------------------------------------------------------
 
-def get_system_info():
-
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
-
+def system_info():
     return {
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
-        "processor": platform.processor() or "Unknown",
+        "architecture": platform.machine(),
+        "python": platform.python_version(),
+        "uptime": get_uptime(),
         "cpu": psutil.cpu_percent(interval=0.2),
-        "ram": memory.percent,
-        "ram_used": bytes_format(memory.used),
-        "ram_total": bytes_format(memory.total),
-        "disk": disk.percent,
-        "uptime": time.time() - psutil.boot_time()
+        "ram": psutil.virtual_memory().percent,
+        "disk": psutil.disk_usage("/").percent,
     }
 
 
-def system_diagnostics():
+def diagnostics():
+    banner()
 
-    clear()
-    header("SYSTEM DIAGNOSTICS")
-
-    info = get_system_info()
+    info = system_info()
 
     table = Table(
-        title="SYSTEM INFORMATION",
-        box=box.ROUNDED
+        title="SYSTEM DIAGNOSTICS",
+        border_style="green"
     )
 
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="white")
+    table.add_column("Component", style="cyan")
+    table.add_column("Information", style="white")
 
-    table.add_row("Hostname", info["hostname"])
-    table.add_row("Operating System", info["platform"])
-    table.add_row("Processor", info["processor"])
-    table.add_row("CPU Usage", f'{info["cpu"]}%')
-    table.add_row("RAM Usage", f'{info["ram"]}%')
-    table.add_row(
-        "RAM",
-        f'{info["ram_used"]} / {info["ram_total"]}'
-    )
-    table.add_row("Disk Usage", f'{info["disk"]}%')
-    table.add_row(
-        "Uptime",
-        f'{info["uptime"] / 3600:.2f} hours'
-    )
+    for key, value in info.items():
+        table.add_row(key.upper(), str(value))
 
     console.print(table)
-
     log_event("System diagnostics viewed")
     pause()
 
 
-# ============================================================
-# LOCAL NETWORK INFORMATION
-# ============================================================
+# ------------------------------------------------------------
+# NETWORK INFORMATION
+# ------------------------------------------------------------
 
-def network_information():
-
-    clear()
-    header("LOCAL NETWORK")
-
-    interfaces = psutil.net_if_addrs()
-    stats = psutil.net_if_stats()
-
+def network_interfaces():
     table = Table(
         title="NETWORK INTERFACES",
-        box=box.ROUNDED
+        border_style="green"
     )
 
     table.add_column("Interface", style="cyan")
     table.add_column("Address")
-    table.add_column("Status")
-    table.add_column("Speed")
+    table.add_column("Family")
 
-    for name, addresses in interfaces.items():
-
-        interface_status = stats.get(name)
-
+    for interface, addresses in psutil.net_if_addrs().items():
         for address in addresses:
-
-            if address.family not in (
+            if address.family in (
                 socket.AF_INET,
                 socket.AF_INET6
             ):
-                continue
-
-            status = (
-                "UP"
-                if interface_status and interface_status.isup
-                else "DOWN"
-            )
-
-            speed = (
-                f"{interface_status.speed} Mbps"
-                if interface_status
-                else "Unknown"
-            )
-
-            table.add_row(
-                name,
-                address.address,
-                status,
-                speed
-            )
+                table.add_row(
+                    interface,
+                    address.address,
+                    "IPv4" if address.family == socket.AF_INET
+                    else "IPv6"
+                )
 
     console.print(table)
 
-    log_event("Local network information viewed")
-    pause()
 
-
-# ============================================================
-# IP ADDRESS ANALYSIS
-# ============================================================
-
-def ip_analysis():
-
-    clear()
-    header("IP INTELLIGENCE")
-
-    value = Prompt.ask("[cyan]Enter IP or CIDR[/cyan]")
-
-    try:
-
-        if "/" in value:
-
-            network = ipaddress.ip_network(
-                value,
-                strict=False
-            )
-
-            table = Table(
-                title="NETWORK ANALYSIS",
-                box=box.ROUNDED
-            )
-
-            table.add_column("Property", style="cyan")
-            table.add_column("Result")
-
-            table.add_row(
-                "Network",
-                str(network.network_address)
-            )
-
-            table.add_row(
-                "Netmask",
-                str(network.netmask)
-            )
-
-            table.add_row(
-                "Broadcast",
-                str(network.broadcast_address)
-            )
-
-            table.add_row(
-                "Prefix",
-                str(network.prefixlen)
-            )
-
-            table.add_row(
-                "IP Version",
-                f"IPv{network.version}"
-            )
-
-            table.add_row(
-                "Total Addresses",
-                str(network.num_addresses)
-            )
-
-            console.print(table)
-
-        else:
-
-            ip = ipaddress.ip_address(value)
-
-            table = Table(
-                title="IP INTELLIGENCE",
-                box=box.ROUNDED
-            )
-
-            table.add_column("Property", style="cyan")
-            table.add_column("Result")
-
-            table.add_row("Address", str(ip))
-            table.add_row("Version", f"IPv{ip.version}")
-            table.add_row("Private", str(ip.is_private))
-            table.add_row("Global", str(ip.is_global))
-            table.add_row("Loopback", str(ip.is_loopback))
-            table.add_row("Multicast", str(ip.is_multicast))
-            table.add_row("Reserved", str(ip.is_reserved))
-
-            if ip.version == 4:
-
-                network = ipaddress.ip_network(
-                    f"{ip}/24",
-                    strict=False
-                )
-
-                table.add_row(
-                    "Example /24 Network",
-                    str(network)
-                )
-
-                table.add_row(
-                    "Example Broadcast",
-                    str(network.broadcast_address)
-                )
-
-            console.print(table)
-
-        log_event(f"IP analysis: {value}")
-
-    except ValueError:
-
-        console.print(
-            "[red]Invalid IP address or CIDR.[/red]"
-        )
-
-    pause()
-
-
-# ============================================================
-# GATEWAY AND DNS
-# ============================================================
-
-def gateway_dns_analysis():
-
-    clear()
-    header("GATEWAY & DNS")
-
-    gateway = "Not detected"
-    dns_servers = []
-
-    if platform.system() == "Linux":
-
-        try:
-
-            with open(
-                "/proc/net/route",
-                "r"
-            ) as file:
-
-                next(file)
-
-                for line in file:
-
-                    fields = line.split()
-
-                    if fields[1] == "00000000":
-
-                        gateway = socket.inet_ntoa(
-                            bytes.fromhex(
-                                fields[2]
-                            )[::-1]
-                        )
-
-                        break
-
-        except Exception:
-            pass
-
-        try:
-
-            with open(
-                "/etc/resolv.conf",
-                "r"
-            ) as file:
-
-                for line in file:
-
-                    if line.startswith("nameserver"):
-
-                        dns_servers.append(
-                            line.split()[1]
-                        )
-
-        except Exception:
-            pass
-
-    table = Table(
-        title="NETWORK CONFIGURATION",
-        box=box.ROUNDED
-    )
-
-    table.add_column("Property", style="cyan")
-    table.add_column("Value")
-
-    table.add_row(
-        "Default Gateway",
-        gateway
-    )
-
-    table.add_row(
-        "DNS Servers",
-        ", ".join(dns_servers) if dns_servers else "Unknown"
-    )
-
-    console.print(table)
-
-    pause()
-
-
-# ============================================================
-# TRAFFIC MONITOR
-# ============================================================
-
-def traffic_monitor():
-
-    clear()
-    header("TRAFFIC ANALYSIS")
-
-    console.print(
-        "[yellow]Sampling local traffic for 3 seconds...[/yellow]"
-    )
-
-    before = psutil.net_io_counters()
-
-    start = time.time()
-    time.sleep(3)
-
-    after = psutil.net_io_counters()
-
-    elapsed = time.time() - start
-
-    received = after.bytes_recv - before.bytes_recv
-    sent = after.bytes_sent - before.bytes_sent
+def network_stats():
+    stats = psutil.net_io_counters()
 
     table = Table(
         title="NETWORK TRAFFIC",
-        box=box.ROUNDED
+        border_style="green"
     )
 
     table.add_column("Metric", style="cyan")
-    table.add_column("Value")
+    table.add_column("Value", justify="right")
 
-    table.add_row(
-        "Download",
-        bytes_format(received)
-    )
-
-    table.add_row(
-        "Upload",
-        bytes_format(sent)
-    )
-
-    table.add_row(
-        "Download Rate",
-        f"{bytes_format(received / elapsed)}/s"
-    )
-
-    table.add_row(
-        "Upload Rate",
-        f"{bytes_format(sent / elapsed)}/s"
-    )
-
-    table.add_row(
-        "Total Received",
-        bytes_format(after.bytes_recv)
-    )
-
-    table.add_row(
-        "Total Sent",
-        bytes_format(after.bytes_sent)
-    )
+    table.add_row("Bytes sent", f"{stats.bytes_sent:,}")
+    table.add_row("Bytes received", f"{stats.bytes_recv:,}")
+    table.add_row("Packets sent", f"{stats.packets_sent:,}")
+    table.add_row("Packets received", f"{stats.packets_recv:,}")
 
     console.print(table)
 
-    pause()
 
+def analyze_ip():
+    banner()
+    console.print("[bold green]IP / CIDR ANALYSIS[/bold green]")
 
-# ============================================================
-# LATENCY TEST
-# ============================================================
-
-def latency_test():
-
-    clear()
-    header("LATENCY TEST")
-
-    target = Prompt.ask(
-        "[cyan]Enter hostname or IP[/cyan]"
-    )
+    value = console.input("\nEnter IP or CIDR: ").strip()
 
     try:
+        if "/" in value:
+            network = ipaddress.ip_network(value, strict=False)
+            result = [
+                ("Network", str(network.network_address)),
+                ("Broadcast", str(network.broadcast_address)),
+                ("Netmask", str(network.netmask)),
+                ("Prefix", str(network.prefixlen)),
+                ("Total addresses", str(network.num_addresses)),
+                ("Version", f"IPv{network.version}")
+            ]
+        else:
+            address = ipaddress.ip_address(value)
+            result = [
+                ("Address", str(address)),
+                ("Version", f"IPv{address.version}"),
+                ("Private", str(address.is_private)),
+                ("Global", str(address.is_global)),
+                ("Loopback", str(address.is_loopback)),
+                ("Multicast", str(address.is_multicast))
+            ]
 
-        resolved = socket.gethostbyname(target)
+        table = Table(title="ANALYSIS RESULT", border_style="green")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value")
 
-        command = (
-            ["ping", "-c", "4", "-W", "2", resolved]
-            if platform.system() == "Linux"
-            else ["ping", "-n", "4", resolved]
-        )
+        for key, val in result:
+            table.add_row(key, val)
 
-        console.print(
-            f"[cyan]Resolved address:[/cyan] {resolved}"
-        )
+        console.print(table)
+        log_event(f"IP analysis: {value}")
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=15
-        )
-
-        console.print(result.stdout or result.stderr)
-
-        log_event(f"Latency test: {target}")
-
-    except socket.gaierror:
-
-        console.print(
-            "[red]Hostname resolution failed.[/red]"
-        )
-
-    except subprocess.TimeoutExpired:
-
-        console.print(
-            "[red]Latency test timed out.[/red]"
-        )
-
-    except Exception as error:
-
-        console.print(
-            f"[red]Error: {error}[/red]"
-        )
+    except ValueError as error:
+        console.print(f"[red]Invalid IP/CIDR: {error}[/red]")
 
     pause()
 
 
-# ============================================================
-# PASSIVE DOMAIN OSINT
-# ============================================================
+def network_analysis():
+    banner()
+    network_interfaces()
+    network_stats()
 
-def dns_query(domain, record_type):
+    console.print("\n[bold green]1.[/bold green] Analyze IP/CIDR")
+    console.print("[bold green]2.[/bold green] Ping diagnostic")
+    console.print("[bold green]0.[/bold green] Back")
 
-    url = (
-        "https://dns.google/resolve"
-        f"?name={quote(domain)}"
-        f"&type={record_type}"
-    )
+    choice = console.input("\nSelect: ").strip()
 
-    try:
+    if choice == "1":
+        analyze_ip()
 
-        response = requests.get(
-            url,
-            timeout=8,
-            headers={"Accept": "application/dns-json"}
-        )
+    elif choice == "2":
+        host = console.input("Host or IP to test: ").strip()
 
-        response.raise_for_status()
+        if not host or any(c.isspace() for c in host):
+            console.print("[red]Invalid input.[/red]")
+            pause()
+            return
 
-        data = response.json()
+        try:
+            console.print(f"\nTesting connectivity to {host}...")
+            result = subprocess.run(
+                ["ping", "-c", "4", "-W", "2", host],
+                capture_output=True,
+                text=True,
+                timeout=12
+            )
 
-        return [
-            item["data"]
-            for item in data.get("Answer", [])
-        ]
+            console.print(result.stdout or result.stderr)
+            log_event(f"Connectivity diagnostic: {host}")
 
-    except requests.RequestException:
-        return []
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            console.print("[red]Ping unavailable or timed out.[/red]")
 
-
-def domain_osint():
-
-    clear()
-    header("PASSIVE DOMAIN OSINT")
-
-    domain = Prompt.ask(
-        "[cyan]Enter domain name[/cyan]"
-    ).strip().lower()
-
-    if (
-        not domain
-        or "/" in domain
-        or " " in domain
-    ):
-        console.print("[red]Invalid domain input.[/red]")
         pause()
-        return
 
-    records = {}
 
-    for record in ["A", "AAAA", "MX", "NS", "TXT"]:
+# ------------------------------------------------------------
+# PASSIVE OSINT
+# Public DNS and RDAP metadata only.
+# ------------------------------------------------------------
 
-        records[record] = dns_query(
-            domain,
-            record
-        )
+def dns_lookup(domain, record_type):
+    url = "https://dns.google/resolve"
 
-    table = Table(
-        title=f"DNS INTELLIGENCE // {domain}",
-        box=box.ROUNDED
+    response = requests.get(
+        url,
+        params={"name": domain, "type": record_type},
+        timeout=8,
+        headers={"User-Agent": "GHOSTSCOUT/7.1"}
     )
 
-    table.add_column("Record", style="cyan")
-    table.add_column("Results")
+    response.raise_for_status()
+    data = response.json()
 
-    for record, values in records.items():
-
-        table.add_row(
-            record,
-            "\n".join(values) if values else "No records found"
-        )
-
-    console.print(table)
-
-    log_event(f"Passive DNS lookup: {domain}")
-
-    export = Prompt.ask(
-        "Export DNS report? (y/n)",
-        default="n"
-    )
-
-    if export.lower() == "y":
-
-        save_report({
-            "domain": domain,
-            "dns_records": records
-        })
-
-    pause()
+    return [
+        item.get("data", "")
+        for item in data.get("Answer", [])
+    ]
 
 
-# ============================================================
-# RDAP DOMAIN METADATA
-# ============================================================
+def passive_osint():
+    banner()
+    console.print("[bold green]PASSIVE DOMAIN INTELLIGENCE[/bold green]")
+    console.print("[dim]Public DNS and registration metadata only.[/dim]")
 
-def rdap_lookup():
+    domain = console.input("\nDomain: ").strip().lower()
 
-    clear()
-    header("RDAP METADATA")
-
-    domain = Prompt.ask(
-        "[cyan]Enter domain[/cyan]"
-    ).strip().lower()
-
-    if (
-        not domain
-        or "/" in domain
-        or " " in domain
-    ):
+    if not domain or "/" in domain or " " in domain:
         console.print("[red]Invalid domain.[/red]")
         pause()
         return
 
+    results = {}
+
+    for record in ("A", "AAAA", "MX", "NS", "TXT"):
+        try:
+            results[record] = dns_lookup(domain, record)
+        except requests.RequestException:
+            results[record] = []
+
     try:
-
         response = requests.get(
-            f"https://rdap.org/domain/{quote(domain)}",
-            timeout=10
+            f"https://rdap.org/domain/{domain}",
+            timeout=10,
+            headers={"User-Agent": "GHOSTSCOUT/7.1"}
         )
 
-        response.raise_for_status()
+        if response.ok:
+            rdap = response.json()
 
-        data = response.json()
+            results["RDAP"] = {
+                "ldhName": rdap.get("ldhName"),
+                "status": rdap.get("status"),
+                "events": rdap.get("events", [])
+            }
+        else:
+            results["RDAP"] = {"status": "Unavailable"}
 
-        table = Table(
-            title="DOMAIN REGISTRATION METADATA",
-            box=box.ROUNDED
-        )
+    except requests.RequestException:
+        results["RDAP"] = {"status": "Unavailable"}
 
-        table.add_column("Property", style="cyan")
-        table.add_column("Value")
+    table = Table(title=f"OSINT: {domain}", border_style="green")
+    table.add_column("Record", style="cyan")
+    table.add_column("Public data")
 
+    for record, values in results.items():
         table.add_row(
-            "Domain",
-            data.get("ldhName", domain)
+            record,
+            json.dumps(values, ensure_ascii=False)
         )
 
-        table.add_row(
-            "Handle",
-            str(data.get("handle", "Unknown"))
-        )
+    console.print(table)
 
-        table.add_row(
-            "Status",
-            ", ".join(data.get("status", [])) or "Unknown"
-        )
-
-        nameservers = [
-            ns.get("ldhName", "")
-            for ns in data.get("nameservers", [])
-        ]
-
-        table.add_row(
-            "Nameservers",
-            ", ".join(nameservers) or "Unknown"
-        )
-
-        events = data.get("events", [])
-
-        for event in events:
-
-            table.add_row(
-                event.get("eventAction", "Event"),
-                event.get("eventDate", "Unknown")
-            )
-
-        console.print(table)
-
-        log_event(f"RDAP lookup: {domain}")
-
-    except requests.RequestException as error:
-
-        console.print(
-            f"[red]RDAP lookup failed: {error}[/red]"
-        )
-
+    log_event(f"Passive OSINT: {domain}")
     pause()
 
 
-# ============================================================
+# ------------------------------------------------------------
 # MANUAL DEVICE INVENTORY
-# ============================================================
+# No automatic discovery or network scanning.
+# ------------------------------------------------------------
+
+DEVICE_FILE = Path("ghostscout_devices.json")
+
+
+def load_devices():
+    if not DEVICE_FILE.exists():
+        return []
+
+    try:
+        return json.loads(DEVICE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_devices(devices):
+    DEVICE_FILE.write_text(
+        json.dumps(devices, indent=4),
+        encoding="utf-8"
+    )
+
 
 def device_inventory():
+    while True:
+        banner()
 
-    clear()
-    header("DEVICE INVENTORY")
+        devices = load_devices()
 
-    table = Table(
-        title="REGISTERED DEVICES",
-        box=box.ROUNDED
-    )
-
-    table.add_column("ID", style="cyan")
-    table.add_column("Device Name")
-    table.add_column("IP Address")
-    table.add_column("Notes")
-
-    for index, device in enumerate(INVENTORY, 1):
-
-        table.add_row(
-            str(index),
-            device["name"],
-            device["ip"],
-            device["notes"]
+        table = Table(
+            title="MANUAL DEVICE INVENTORY",
+            border_style="green"
         )
 
-    if not INVENTORY:
+        table.add_column("Name", style="cyan")
+        table.add_column("IP")
+        table.add_column("Notes")
 
-        console.print(
-            "[yellow]No manually registered devices.[/yellow]"
-        )
-
-    else:
+        for device in devices:
+            table.add_row(
+                device.get("name", ""),
+                device.get("ip", ""),
+                device.get("notes", "")
+            )
 
         console.print(table)
 
-    choice = Prompt.ask(
-        "Add a device? (y/n)",
-        default="n"
-    )
+        console.print("\n[green]1.[/green] Add device")
+        console.print("[green]2.[/green] Remove device")
+        console.print("[green]0.[/green] Back")
 
-    if choice.lower() == "y":
+        choice = console.input("\nSelect: ").strip()
 
-        name = Prompt.ask("Device name")
-        address = Prompt.ask("Device IP")
+        if choice == "1":
+            name = console.input("Device name: ").strip()
+            address = console.input("IP address: ").strip()
+            notes = console.input("Notes: ").strip()
 
-        try:
-            ipaddress.ip_address(address)
+            if not name:
+                console.print("[red]Name is required.[/red]")
+                pause()
+                continue
 
-            notes = Prompt.ask(
-                "Notes",
-                default="Authorized device"
-            )
+            if address:
+                try:
+                    ipaddress.ip_address(address)
+                except ValueError:
+                    console.print("[red]Invalid IP address.[/red]")
+                    pause()
+                    continue
 
-            INVENTORY.append({
+            devices.append({
                 "name": name,
                 "ip": address,
-                "notes": notes
+                "notes": notes,
+                "added": timestamp()
             })
 
-            log_event(
-                f"Device registered: {name}"
-            )
+            save_devices(devices)
+            log_event(f"Device added: {name}")
 
-            console.print(
-                "[green]Device added successfully.[/green]"
-            )
+        elif choice == "2":
+            if not devices:
+                console.print("[yellow]Inventory is empty.[/yellow]")
+                pause()
+                continue
 
-        except ValueError:
+            for index, device in enumerate(devices, start=1):
+                console.print(
+                    f"{index}. {device.get('name', 'Unknown')}"
+                )
 
-            console.print(
-                "[red]Invalid IP address.[/red]"
-            )
+            try:
+                number = int(console.input("Device number: "))
+                if 1 <= number <= len(devices):
+                    removed = devices.pop(number - 1)
+                    save_devices(devices)
+                    log_event(
+                        f"Device removed: {removed.get('name')}"
+                    )
+            except ValueError:
+                console.print("[red]Invalid number.[/red]")
 
-    pause()
+        elif choice == "0":
+            return
 
 
-# ============================================================
+# ------------------------------------------------------------
 # LIVE DASHBOARD
-# ============================================================
+# ------------------------------------------------------------
 
 def dashboard():
-
-    clear()
-
-    psutil.cpu_percent(interval=None)
+    banner()
+    console.print("[dim]Press Ctrl+C to return to menu.[/dim]\n")
 
     try:
-
         with Live(
-            refresh_per_second=2,
+            get_dashboard_layout(),
             console=console,
-            screen=True
+            refresh_per_second=1,
+            screen=False
         ) as live:
 
             while True:
-
-                info = get_system_info()
-
-                net = psutil.net_io_counters()
-
-                layout = Layout()
-
-                layout.split_column(
-                    Layout(name="header", size=3),
-                    Layout(name="body"),
-                    Layout(name="footer", size=3)
-                )
-
-                layout["body"].split_row(
-                    Layout(name="system"),
-                    Layout(name="network")
-                )
-
-                system_table = Table(
-                    box=box.SIMPLE,
-                    expand=True
-                )
-
-                system_table.add_column(
-                    "SYSTEM",
-                    style="cyan"
-                )
-
-                system_table.add_column("VALUE")
-
-                system_table.add_row(
-                    "CPU",
-                    f'{info["cpu"]}%'
-                )
-
-                system_table.add_row(
-                    "RAM",
-                    f'{info["ram"]}%'
-                )
-
-                system_table.add_row(
-                    "DISK",
-                    f'{info["disk"]}%'
-                )
-
-                system_table.add_row(
-                    "HOST",
-                    info["hostname"]
-                )
-
-                system_table.add_row(
-                    "UPTIME",
-                    f'{info["uptime"] / 3600:.2f} hours'
-                )
-
-                network_table = Table(
-                    box=box.SIMPLE,
-                    expand=True
-                )
-
-                network_table.add_column(
-                    "NETWORK",
-                    style="cyan"
-                )
-
-                network_table.add_column("VALUE")
-
-                network_table.add_row(
-                    "RX",
-                    bytes_format(net.bytes_recv)
-                )
-
-                network_table.add_row(
-                    "TX",
-                    bytes_format(net.bytes_sent)
-                )
-
-                network_table.add_row(
-                    "PACKETS IN",
-                    str(net.packets_recv)
-                )
-
-                network_table.add_row(
-                    "PACKETS OUT",
-                    str(net.packets_sent)
-                )
-
-                network_table.add_row(
-                    "REGISTERED DEVICES",
-                    str(len(INVENTORY))
-                )
-
-                layout["header"].update(
-                    Panel(
-                        "[bold cyan]GHOSTSCOUT // LIVE DASHBOARD[/bold cyan]",
-                        border_style="cyan"
-                    )
-                )
-
-                layout["system"].update(
-                    Panel(
-                        system_table,
-                        title="SYSTEM STATUS",
-                        border_style="green"
-                    )
-                )
-
-                layout["network"].update(
-                    Panel(
-                        network_table,
-                        title="NETWORK STATUS",
-                        border_style="cyan"
-                    )
-                )
-
-                layout["footer"].update(
-                    Panel(
-                        f"[green]LIVE[/green] "
-                        f"[dim]{timestamp()} | CTRL+C TO EXIT[/dim]",
-                        border_style="cyan"
-                    )
-                )
-
-                live.update(layout)
-
+                live.update(get_dashboard_layout())
                 time.sleep(1)
 
     except KeyboardInterrupt:
         pass
 
+    log_event("Dashboard viewed")
 
-# ============================================================
-# ACTIVITY LOGS
-# ============================================================
 
-def activity_logs():
+def get_dashboard_layout():
+    info = system_info()
+    traffic = psutil.net_io_counters()
 
-    clear()
-    header("ACTIVITY LOGS")
-
-    table = Table(
-        title="SESSION EVENTS",
-        box=box.ROUNDED
+    layout = Layout()
+    layout.split_column(
+        Layout(name="header", size=3),
+        Layout(name="body"),
+        Layout(name="footer", size=3)
     )
 
-    table.add_column("Timestamp", style="cyan")
-    table.add_column("Activity")
+    layout["body"].split_row(
+        Layout(name="system"),
+        Layout(name="network")
+    )
 
-    for entry in LOGS:
-
-        table.add_row(
-            entry["time"],
-            entry["event"]
+    layout["header"].update(
+        Panel(
+            Align.center(
+                "[bold green]GHOSTSCOUT // LIVE DASHBOARD[/bold green]"
+            ),
+            border_style="green"
         )
+    )
 
-    if not LOGS:
+    system_table = Table.grid(padding=(0, 2))
+    system_table.add_column(style="cyan")
+    system_table.add_column(style="white")
 
-        console.print(
-            "[yellow]No activity recorded.[/yellow]"
+    system_table.add_row("Hostname", info["hostname"])
+    system_table.add_row("Platform", platform.system())
+    system_table.add_row("Uptime", info["uptime"])
+    system_table.add_row("CPU", f"{info['cpu']}%")
+    system_table.add_row("RAM", f"{info['ram']}%")
+    system_table.add_row("Disk", f"{info['disk']}%")
+
+    layout["system"].update(
+        Panel(system_table, title="SYSTEM STATUS", border_style="green")
+    )
+
+    network_table = Table.grid(padding=(0, 2))
+    network_table.add_column(style="cyan")
+    network_table.add_column(style="white")
+
+    network_table.add_row("Bytes sent", f"{traffic.bytes_sent:,}")
+    network_table.add_row("Bytes received", f"{traffic.bytes_recv:,}")
+    network_table.add_row("Packets sent", f"{traffic.packets_sent:,}")
+    network_table.add_row("Packets received", f"{traffic.packets_recv:,}")
+    network_table.add_row("Interfaces", str(len(psutil.net_if_addrs())))
+
+    layout["network"].update(
+        Panel(network_table, title="NETWORK STATUS", border_style="green")
+    )
+
+    layout["footer"].update(
+        Panel(
+            f"[green]ONLINE[/green]  |  {timestamp()}  |  "
+            "[dim]Ctrl+C to exit dashboard[/dim]",
+            border_style="green"
         )
+    )
 
-    else:
+    return layout
+
+
+# ------------------------------------------------------------
+# ACTIVITY LOGS
+# ------------------------------------------------------------
+
+def view_logs():
+    banner()
+
+    path = Path("ghostscout_logs.jsonl")
+
+    if not path.exists():
+        console.print("[yellow]No activity logs yet.[/yellow]")
+        pause()
+        return
+
+    table = Table(title="ACTIVITY LOGS", border_style="green")
+    table.add_column("Time", style="cyan")
+    table.add_column("Event")
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+
+        for line in lines[-50:]:
+            try:
+                item = json.loads(line)
+                table.add_row(
+                    item.get("time", ""),
+                    item.get("event", "")
+                )
+            except json.JSONDecodeError:
+                continue
 
         console.print(table)
+
+    except OSError as error:
+        console.print(f"[red]{error}[/red]")
 
     pause()
 
 
-# ============================================================
+# ------------------------------------------------------------
 # REPORT EXPORT
-# ============================================================
+# ------------------------------------------------------------
 
-def save_report(extra=None):
+def export_report():
+    banner()
 
     report = {
         "application": APP_NAME,
         "version": VERSION,
-        "generated_at": timestamp(),
-        "system": get_system_info(),
-        "network": {
-            "interfaces": {
-                name: [
-                    {
-                        "address": address.address,
-                        "family": str(address.family)
-                    }
-                    for address in addresses
-                ]
-                for name, addresses in psutil.net_if_addrs().items()
-            },
-            "traffic": {
-                "received": psutil.net_io_counters().bytes_recv,
-                "sent": psutil.net_io_counters().bytes_sent
+        "generated": timestamp(),
+        "system": system_info(),
+        "network_interfaces": {},
+        "network_traffic": {},
+        "manual_devices": load_devices()
+    }
+
+    for interface, addresses in psutil.net_if_addrs().items():
+        report["network_interfaces"][interface] = [
+            {
+                "address": item.address,
+                "family": str(item.family)
             }
-        },
-        "inventory": INVENTORY,
-        "logs": LOGS,
-        "additional_data": extra or {}
+            for item in addresses
+        ]
+
+    traffic = psutil.net_io_counters()
+
+    report["network_traffic"] = {
+        "bytes_sent": traffic.bytes_sent,
+        "bytes_received": traffic.bytes_recv,
+        "packets_sent": traffic.packets_sent,
+        "packets_received": traffic.packets_recv
     }
 
     filename = (
-        "GHOSTSCOUT_REPORT_"
+        "ghostscout_report_"
         + datetime.now().strftime("%Y%m%d_%H%M%S")
         + ".json"
     )
 
     try:
-
-        with open(
-            filename,
-            "w",
+        Path(filename).write_text(
+            json.dumps(report, indent=4),
             encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                report,
-                file,
-                indent=4,
-                ensure_ascii=False
-            )
-
-        console.print(
-            f"\n[green]Report saved: {filename}[/green]"
         )
 
+        console.print(f"[green]Report exported: {filename}[/green]")
         log_event(f"Report exported: {filename}")
 
     except OSError as error:
+        console.print(f"[red]Export failed: {error}[/red]")
 
-        console.print(
-            f"[red]Export failed: {error}[/red]"
-        )
-
-
-# ============================================================
-# NETWORK MENU
-# ============================================================
-
-def network_menu():
-
-    while True:
-
-        clear()
-        header("NETWORK ANALYSIS CENTER")
-
-        console.print("""
-[bold cyan] [1] [/bold cyan] IP Address Intelligence
-[bold cyan] [2] [/bold cyan] Network Interfaces
-[bold cyan] [3] [/bold cyan] Gateway & DNS
-[bold cyan] [4] [/bold cyan] Traffic Analysis
-[bold cyan] [5] [/bold cyan] Latency Test
-[bold cyan] [0] [/bold cyan] Back
-        """)
-
-        choice = Prompt.ask("Select")
-
-        if choice == "1":
-            ip_analysis()
-
-        elif choice == "2":
-            network_information()
-
-        elif choice == "3":
-            gateway_dns_analysis()
-
-        elif choice == "4":
-            traffic_monitor()
-
-        elif choice == "5":
-            latency_test()
-
-        elif choice == "0":
-            break
+    pause()
 
 
-# ============================================================
-# OSINT MENU
-# ============================================================
-
-def osint_menu():
-
-    while True:
-
-        clear()
-        header("PASSIVE OSINT CENTER")
-
-        console.print("""
-[bold cyan] [1] [/bold cyan] DNS Records
-[bold cyan] [2] [/bold cyan] RDAP Metadata
-[bold cyan] [0] [/bold cyan] Back
-        """)
-
-        choice = Prompt.ask("Select")
-
-        if choice == "1":
-            domain_osint()
-
-        elif choice == "2":
-            rdap_lookup()
-
-        elif choice == "0":
-            break
-
-
-# ============================================================
+# ------------------------------------------------------------
 # MAIN MENU
-# ============================================================
+# ------------------------------------------------------------
 
 def main_menu():
-
     while True:
-
-        clear()
+        banner()
 
         console.print(
             Panel(
-                Align.center(
-                    "[bold cyan]G H O S T S C O U T[/bold cyan]\n"
-                    "[dim]DEFENSIVE INTELLIGENCE FRAMEWORK[/dim]\n\n"
-                    "[white]SYSTEM MONITORING | NETWORK ANALYSIS | OSINT[/white]"
-                ),
-                border_style="cyan",
-                box=box.DOUBLE
+                "[bold green]GHOSTSCOUT CONTROL CENTER[/bold green]\n"
+                "[dim]Defensive system and network intelligence[/dim]",
+                border_style="green"
             )
         )
 
-        console.print("""
-[bold cyan] [1] [/bold cyan] Live Dashboard
-[bold cyan] [2] [/bold cyan] System Diagnostics
-[bold cyan] [3] [/bold cyan] Network Information
-[bold cyan] [4] [/bold cyan] IP & Network Analysis
-[bold cyan] [5] [/bold cyan] Passive Domain OSINT
-[bold cyan] [6] [/bold cyan] Device Inventory
-[bold cyan] [7] [/bold cyan] Activity Logs
-[bold cyan] [8] [/bold cyan] Export JSON Report
-[bold cyan] [9] [/bold cyan] Matrix Animation
-[bold cyan] [0] [/bold cyan] Exit
-        """)
+        options = [
+            ("1", "Live Dashboard"),
+            ("2", "Network & IP Analysis"),
+            ("3", "System Diagnostics"),
+            ("4", "Passive Domain OSINT"),
+            ("5", "Manual Device Inventory"),
+            ("6", "Activity Logs"),
+            ("7", "Export JSON Report"),
+            ("8", "About GHOSTSCOUT"),
+            ("0", "Exit")
+        ]
 
-        choice = Prompt.ask(
-            "[bold green]GHOSTSCOUT[/bold green]"
+        table = Table(
+            show_header=False,
+            border_style="green",
+            expand=True
         )
+
+        table.add_column("Option", style="bold green", width=10)
+        table.add_column("Module", style="white")
+
+        for number, label in options:
+            table.add_row(number, label)
+
+        console.print(table)
+
+        choice = console.input("\n[bold green]GHOSTSCOUT > [/bold green]").strip()
+
+        # Restart menu music after each selection.
+        play_music()
 
         if choice == "1":
             dashboard()
 
         elif choice == "2":
-            system_diagnostics()
+            network_analysis()
 
         elif choice == "3":
-            network_information()
+            diagnostics()
 
         elif choice == "4":
-            network_menu()
+            passive_osint()
 
         elif choice == "5":
-            osint_menu()
-
-        elif choice == "6":
             device_inventory()
 
+        elif choice == "6":
+            view_logs()
+
         elif choice == "7":
-            activity_logs()
+            export_report()
 
         elif choice == "8":
-
-            clear()
-            header("REPORT EXPORT")
-            save_report()
-            pause()
-
-        elif choice == "9":
-            matrix_boot()
+            banner()
+            console.print(
+                Panel(
+                    "[bold green]GHOSTSCOUT v7.1[/bold green]\n\n"
+                    "System diagnostics\n"
+                    "Network interface monitoring\n"
+                    "IP and CIDR analysis\n"
+                    "Passive public DNS / RDAP lookup\n"
+                    "Manual device inventory\n"
+                    "JSON reporting\n\n"
+                    "[dim]Use only on systems and networks "
+                    "you own or are authorized to manage.[/dim]",
+                    title="ABOUT",
+                    border_style="green"
+                )
+            )
             pause()
 
         elif choice == "0":
-
-            console.print(
-                "\n[bold cyan]GHOSTSCOUT SHUTDOWN[/bold cyan]"
-            )
-
-            log_event("Application shutdown")
+            log_event("Application exited")
             break
 
         else:
-
-            console.print(
-                "[red]Invalid menu option.[/red]"
-            )
-
+            console.print("[red]Invalid menu option.[/red]")
             time.sleep(1)
 
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
+# ------------------------------------------------------------
+# STARTUP
+# ------------------------------------------------------------
 
 def main():
-
     try:
-
-        matrix_boot()
-
+        matrix_intro()
         log_event("GHOSTSCOUT started")
-
         main_menu()
 
     except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
 
-        console.print(
-            "\n[yellow]Application interrupted.[/yellow]"
-        )
-
-    except Exception as error:
-
-        console.print(
-            f"\n[red]Fatal error: {error}[/red]"
-        )
+    finally:
+        stop_music()
+        console.print("\n[bold green]GHOSTSCOUT OFFLINE[/bold green]")
 
 
 if __name__ == "__main__":
