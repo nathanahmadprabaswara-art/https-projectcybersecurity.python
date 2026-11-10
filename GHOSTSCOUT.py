@@ -7,8 +7,14 @@ import platform
 import threading
 import webbrowser
 import shutil
+
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+# ==========================================
+# GHOSTSCOUT CONFIGURATION
+# ==========================================
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -22,6 +28,10 @@ WHITE = "\033[97m"
 RED = "\033[91m"
 RESET = "\033[0m"
 
+
+# ==========================================
+# TERMINAL UTILITIES
+# ==========================================
 
 def clear():
     os.system("cls" if os.name == "nt" else "clear")
@@ -40,26 +50,86 @@ def banner():
 """ + RESET)
 
 
-def boot():
-    clear()
-    banner()
+# ==========================================
+# MATRIX INTRO
+# ==========================================
 
-    tasks = [
-        "Initializing interface",
-        "Loading terminal modules",
-        "Checking Python environment",
-        "Preparing local dashboard",
-        "Loading visual components",
-        "Starting GHOSTSCOUT"
+def matrix_intro():
+    clear()
+
+    width = shutil.get_terminal_size((80, 24)).columns
+    height = shutil.get_terminal_size((80, 24)).lines
+
+    characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    drops = [random.randint(0, height) for _ in range(width)]
+
+    try:
+        for frame in range(65):
+            print("\033[H", end="")
+
+            for row in range(height - 5):
+                line = ""
+
+                for col in range(width):
+                    if drops[col] == row:
+                        line += GREEN + random.choice(characters) + RESET
+                        drops[col] = (drops[col] + 1) % height
+                    elif random.random() > 0.96:
+                        line += DARK_GREEN + random.choice(characters) + RESET
+                    else:
+                        line += " "
+
+                print(line)
+
+            time.sleep(0.045)
+
+    except KeyboardInterrupt:
+        pass
+
+    clear()
+
+    logo = r"""
+   ________  ______  ______  ______  ______
+  / ____/ / / / __ \/ ____/ / ____/ / ____/
+ / / __/ /_/ / / / / /     / /     / __/
+ / /_/ / __  / /_/ / /___  / /___  / /___
+ \____/_/ /_/_____/\____/  \____/ /_____/
+
+             G H O S T S C O U T
+    """
+
+    for char in logo:
+        print(GREEN + char + RESET, end="", flush=True)
+        time.sleep(0.002)
+
+    print("\n")
+
+    messages = [
+        "INITIALIZING GHOSTSCOUT",
+        "LOADING TERMINAL INTERFACE",
+        "PREPARING LOCAL DASHBOARD",
+        "LOADING VISUAL MODULES",
+        "CHECKING PYTHON ENVIRONMENT",
+        "SYSTEM READY"
     ]
 
-    for task in tasks:
-        print(f"{GREEN}[+]{RESET} {task}")
-        time.sleep(0.35)
+    for message in messages:
+        print(f"{GREEN}[+]{RESET} {message}")
+        time.sleep(0.4)
 
-    print(f"\n{GREEN}[OK] SYSTEM READY{RESET}")
-    time.sleep(0.7)
+    print("\n")
+    print(GREEN + "          [ ACCESS GRANTED ]" + RESET)
 
+    time.sleep(1.2)
+
+
+def boot():
+    matrix_intro()
+
+
+# ==========================================
+# SYSTEM INFORMATION
+# ==========================================
 
 def system_info():
     return {
@@ -72,15 +142,22 @@ def system_info():
     }
 
 
+# ==========================================
+# DASHBOARD HTML
+# ==========================================
+
 def get_html():
     return r"""<!DOCTYPE html>
 <html lang="en">
+
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>GHOSTSCOUT Dashboard</title>
 
 <style>
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -120,7 +197,10 @@ header p {
     margin: auto;
     padding: 25px;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    grid-template-columns: repeat(
+        auto-fit,
+        minmax(250px, 1fr)
+    );
     gap: 20px;
 }
 
@@ -173,10 +253,26 @@ header p {
     margin: 10px auto;
     position: relative;
     overflow: hidden;
+
     background:
-        linear-gradient(90deg, transparent 49.5%, #00ff7240 50%, transparent 50.5%),
-        linear-gradient(0deg, transparent 49.5%, #00ff7240 50%, transparent 50.5%),
-        repeating-radial-gradient(circle, transparent 0 25px, #00ff7230 26px 27px);
+        linear-gradient(
+            90deg,
+            transparent 49.5%,
+            #00ff7240 50%,
+            transparent 50.5%
+        ),
+        linear-gradient(
+            0deg,
+            transparent 49.5%,
+            #00ff7240 50%,
+            transparent 50.5%
+        ),
+        repeating-radial-gradient(
+            circle,
+            transparent 0 25px,
+            #00ff7230 26px 27px
+        );
+
     box-shadow: 0 0 20px #00ff7230;
 }
 
@@ -188,13 +284,22 @@ header p {
     left: 50%;
     top: 50%;
     transform-origin: top left;
-    background: linear-gradient(135deg, #00ff7270, transparent 70%);
+    background: linear-gradient(
+        135deg,
+        #00ff7270,
+        transparent 70%
+    );
     animation: scan 4s linear infinite;
 }
 
 @keyframes scan {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .radar-dot {
@@ -279,6 +384,7 @@ footer {
         padding: 15px;
     }
 }
+
 </style>
 </head>
 
@@ -301,12 +407,14 @@ footer {
     <div class="card">
         <h2>SECURITY MODE</h2>
         <div class="value">LOCAL ONLY</div>
-        <div class="muted">No remote scanning or attacks</div>
+        <div class="muted">No remote attacks</div>
     </div>
 
     <div class="card">
         <h2>LOCAL RADAR</h2>
+
         <div class="radar" id="radar"></div>
+
         <div class="muted" style="text-align:center">
             Decorative visualization only
         </div>
@@ -314,22 +422,32 @@ footer {
 
     <div class="card">
         <h2>ACTIVITY FEED</h2>
+
         <div id="feed">
-            <div class="feed-item">[SYSTEM] Dashboard initialized</div>
-            <div class="feed-item">[SYSTEM] Local mode enabled</div>
+            <div class="feed-item">
+                [SYSTEM] Dashboard initialized
+            </div>
+
+            <div class="feed-item">
+                [SYSTEM] Local mode enabled
+            </div>
         </div>
     </div>
 
     <div class="card">
         <h2>AUTHORIZED DEVICE INVENTORY</h2>
 
-        <input id="deviceName"
-               type="text"
-               placeholder="Device name">
+        <input
+            id="deviceName"
+            type="text"
+            placeholder="Device name"
+        >
 
-        <input id="deviceAddress"
-               type="text"
-               placeholder="IP address or note">
+        <input
+            id="deviceAddress"
+            type="text"
+            placeholder="IP address or note"
+        >
 
         <button onclick="addDevice()">
             + ADD DEVICE
@@ -344,7 +462,11 @@ footer {
 
     <div class="card">
         <h2>ABOUT GHOSTSCOUT</h2>
-        <div class="value">GHOSTSCOUT v1.0</div>
+
+        <div class="value">
+            GHOSTSCOUT v1.0
+        </div>
+
         <div class="muted">
             Local dashboard and authorized device inventory.
         </div>
@@ -357,8 +479,8 @@ footer {
 </footer>
 
 <script>
-const feed = document.getElementById("feed");
-const radar = document.getElementById("radar");
+
+// CLOCK
 
 function updateClock() {
     document.getElementById("clock").textContent =
@@ -367,6 +489,11 @@ function updateClock() {
 
 setInterval(updateClock, 1000);
 updateClock();
+
+
+// ACTIVITY FEED
+
+const feed = document.getElementById("feed");
 
 const messages = [
     "[SYSTEM] Interface operational",
@@ -378,7 +505,9 @@ const messages = [
 
 function addFeed(message) {
     const item = document.createElement("div");
+
     item.className = "feed-item";
+
     item.textContent =
         new Date().toLocaleTimeString() + " " + message;
 
@@ -394,32 +523,50 @@ setInterval(() => {
         messages[Math.floor(Math.random() * messages.length)];
 
     addFeed(message);
+
 }, 4000);
 
 
-// Decorative radar points only
+// DECORATIVE RADAR
+
+const radar = document.getElementById("radar");
+
 function createRadarPoints() {
-    radar.querySelectorAll(".radar-dot").forEach(dot => dot.remove());
+
+    radar.querySelectorAll(".radar-dot").forEach(
+        dot => dot.remove()
+    );
 
     for (let i = 0; i < 5; i++) {
+
         const dot = document.createElement("div");
+
         dot.className = "radar-dot";
 
-        dot.style.left = (15 + Math.random() * 70) + "%";
-        dot.style.top = (15 + Math.random() * 70) + "%";
+        dot.style.left =
+            (15 + Math.random() * 70) + "%";
+
+        dot.style.top =
+            (15 + Math.random() * 70) + "%";
 
         radar.appendChild(dot);
     }
 }
 
 createRadarPoints();
+
 setInterval(createRadarPoints, 3000);
 
 
-// Manual device inventory
+// MANUAL DEVICE INVENTORY
+
 function addDevice() {
-    const nameInput = document.getElementById("deviceName");
-    const addressInput = document.getElementById("deviceAddress");
+
+    const nameInput =
+        document.getElementById("deviceName");
+
+    const addressInput =
+        document.getElementById("deviceAddress");
 
     const name = nameInput.value.trim();
     const address = addressInput.value.trim();
@@ -430,6 +577,7 @@ function addDevice() {
     }
 
     const device = document.createElement("div");
+
     device.className = "device";
 
     const title = document.createElement("strong");
@@ -439,6 +587,7 @@ function addDevice() {
     detail.textContent = address;
 
     const removeButton = document.createElement("button");
+
     removeButton.textContent = "REMOVE";
 
     removeButton.onclick = function() {
@@ -450,22 +599,30 @@ function addDevice() {
     device.appendChild(detail);
     device.appendChild(removeButton);
 
-    document.getElementById("deviceList").appendChild(device);
+    document
+        .getElementById("deviceList")
+        .appendChild(device);
 
     nameInput.value = "";
     addressInput.value = "";
 
     addFeed("[INVENTORY] Device added manually");
 }
+
 </script>
 
 </body>
 </html>"""
 
 
+# ==========================================
+# HTTP SERVER
+# ==========================================
+
 class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
+
         if self.path != "/":
             self.send_error(404)
             return
@@ -473,26 +630,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
         content = get_html().encode("utf-8")
 
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
 
+        self.send_header(
+            "Content-Type",
+            "text/html; charset=utf-8"
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(content))
+        )
+
+        self.end_headers()
         self.wfile.write(content)
 
     def log_message(self, format, *args):
         return
 
 
+# ==========================================
+# DASHBOARD CONTROL
+# ==========================================
+
 def launch_dashboard():
-    global server, server_thread
+
+    global server
+    global server_thread
 
     if server_thread and server_thread.is_alive():
-        print(f"{GREEN}[INFO] Dashboard already running.{RESET}")
+
+        print(
+            f"{GREEN}[INFO] Dashboard already running.{RESET}"
+        )
+
         webbrowser.open(f"http://{HOST}:{PORT}")
         return
 
     try:
-        server = HTTPServer((HOST, PORT), DashboardHandler)
+
+        server = HTTPServer(
+            (HOST, PORT),
+            DashboardHandler
+        )
 
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -503,42 +682,96 @@ def launch_dashboard():
 
         url = f"http://{HOST}:{PORT}"
 
-        print(f"{GREEN}[OK] Dashboard started: {url}{RESET}")
+        print(
+            f"{GREEN}[OK] Dashboard started: {url}{RESET}"
+        )
+
         webbrowser.open(url)
 
     except OSError as error:
+
         print(f"{RED}[ERROR] {error}{RESET}")
 
 
 def stop_dashboard():
-    global server, server_thread
+
+    global server
+    global server_thread
 
     if server:
+
         server.shutdown()
         server.server_close()
+
         server = None
         server_thread = None
-        print(f"{GREEN}[OK] Dashboard stopped.{RESET}")
+
+        print(
+            f"{GREEN}[OK] Dashboard stopped.{RESET}"
+        )
+
     else:
+
         print("[INFO] Dashboard is not running.")
 
 
+# ==========================================
+# ABOUT
+# ==========================================
+
 def about():
+
     clear()
     banner()
 
     print(WHITE + "GHOSTSCOUT v1.0")
-    print("Created for local dashboard visualization.")
+    print("Local dashboard visualization.")
     print("Standard Python libraries only.")
-    print("Radar is decorative; device inventory is manual.")
+    print("Radar is decorative.")
+    print("Device inventory is manual.")
     print("No remote scanning or attack functionality.")
     print(RESET)
 
     input("\nPress ENTER to continue...")
 
 
+# ==========================================
+# MATRIX EFFECT MENU
+# ==========================================
+
+def matrix_rain():
+
+    clear()
+
+    characters = "0123456789ABCDEF"
+
+    try:
+
+        for _ in range(25):
+
+            width = shutil.get_terminal_size((80, 24)).columns
+
+            line = "".join(
+                random.choice(characters)
+                for _ in range(width)
+            )
+
+            print(GREEN + line + RESET)
+
+            time.sleep(0.08)
+
+    except KeyboardInterrupt:
+        pass
+
+
+# ==========================================
+# MAIN CLI
+# ==========================================
+
 def menu():
+
     while True:
+
         clear()
         banner()
 
@@ -552,63 +785,74 @@ def menu():
         choice = input("\nGHOSTSCOUT > ").strip()
 
         if choice == "1":
+
             clear()
             banner()
 
             info = system_info()
 
             for key, value in info.items():
-                print(f"{GREEN}{key.upper():15}{RESET}: {value}")
+
+                print(
+                    f"{GREEN}{key.upper():15}{RESET}: {value}"
+                )
 
             input("\nPress ENTER to continue...")
 
         elif choice == "2":
+
             launch_dashboard()
+
             input("\nPress ENTER to continue...")
 
         elif choice == "3":
+
             matrix_rain()
 
         elif choice == "4":
+
             stop_dashboard()
+
             input("\nPress ENTER to continue...")
 
         elif choice == "5":
+
             about()
 
         elif choice == "0":
+
             stop_dashboard()
-            print(f"\n{GREEN}GHOSTSCOUT TERMINATED.{RESET}")
+
+            print(
+                f"\n{GREEN}GHOSTSCOUT TERMINATED.{RESET}"
+            )
+
             sys.exit(0)
 
         else:
+
             print(f"{RED}Invalid option.{RESET}")
+
             time.sleep(1)
 
 
-def matrix_rain():
-    clear()
-
-    try:
-        for _ in range(20):
-            line = "".join(
-                random.choice("01ABCDEF0123456789")
-                for _ in range(70)
-            )
-
-            print(GREEN + line + RESET)
-            time.sleep(0.08)
-
-    except KeyboardInterrupt:
-        pass
-
+# ==========================================
+# PROGRAM ENTRY POINT
+# ==========================================
 
 if __name__ == "__main__":
+
     try:
+
         boot()
         menu()
 
     except KeyboardInterrupt:
+
         stop_dashboard()
-        print(f"\n{RED}Program interrupted.{RESET}")
+
+        print(
+            f"\n{RED}Program interrupted.{RESET}"
+        )
+
         sys.exit(0)
